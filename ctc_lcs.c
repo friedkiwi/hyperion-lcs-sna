@@ -54,12 +54,13 @@
 
 //-----------------------------------------------------------------------------
 /* CCW Codes 0x03 & 0xC3 are immediate commands */
+/* CCW Code 0x17 (Control) is an immediate command */
 
 static BYTE  CTC_Immed_Commands [256] =
 {
 /* 0 1 2 3 4 5 6 7 8 9 A B C D E F */
    0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0, /* 00 */
-   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* 10 */
+   0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0, /* 10 */
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* 20 */
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* 30 */
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* 40 */
@@ -95,12 +96,13 @@ static void     LCS_DelMulticast  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int i
 static void     LCS_DefaultCmdProc( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 
 static void*    LCS_PortThread( void* arg /*PLCSPORT pLCSPORT */ );
+static void*    LCS_AttnThread( void* arg /*PLCSBLK pLCSBLK */ );
 
 static void     LCS_EnqueueEthFrame     ( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize );
 static int      LCS_DoEnqueueEthFrame   ( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize );
 
-static void     LCS_EnqueueReplyFrame   ( PLCSDEV pLCSDEV, LCSCMDHDR* pReply, size_t iSize );
-static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, LCSCMDHDR* pReply, size_t iSize );
+static void     LCS_EnqueueReplyFrame   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize );
+static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize );
 
 static int      BuildOAT( char* pszOATName, PLCSBLK pLCSBLK );
 static char*    ReadOAT( char* pszOATName, FILE* fp, char* pszBuff );
@@ -131,7 +133,7 @@ static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK,
 
 #define ENQUEUE_REPLY_FRAME( pLCSDEV, pReply, iReplyLen )            \
                                                                      \
-    LCS_EnqueueReplyFrame( (pLCSDEV), (LCSCMDHDR*) (pReply), (iReplyLen) )
+    LCS_EnqueueReplyFrame( (pLCSDEV), (PLCSCMDHDR) (pReply), (iReplyLen) )
 
 #define SET_CPKTTYPE( ethtyp, pkttyp )                                        \
     do                                                                        \
@@ -172,8 +174,9 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
     int         i;
     int         rc;
     BYTE        bMode;   /* Either LCSDEV_MODE_IP or LCSDEV_MODE_SNA */
-
     struct in_addr  addr;               // Work area for addresses
+    char        thread_name[32];        // Thread name
+
 
     pDEVBLK->devtype = 0x3088;
 
@@ -199,6 +202,11 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
             return -1;
         }
         memset( pLCSBLK, 0, sizeof( LCSBLK ));
+
+        // Initialize locking and event mechanisms
+        initialize_lock( &pLCSBLK->AttnLock );
+        initialize_lock( &pLCSBLK->AttnEventLock );
+        initialize_condition( &pLCSBLK->AttnEvent );
 
         for (i=0; i < LCS_MAX_PORTS; i++)
         {
@@ -284,6 +292,7 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
         pLCSBLK = pDEVBLK->group->grp_data;
 
     // When this code is reached the last devblk has been allocated.
+
     // Now build the LCSDEV's...
 
     // If an OAT is specified, the addresses that were specified in the
@@ -424,9 +433,13 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
             LCS_Assist( pLCSPORT );
 
             // Now create the port thread to read packets from tuntap
+            // The thread name uses the read device address of the first device pair.
+            MSGBUF( thread_name, "%s %4.4X Port %d Thread",
+                                 pLCSBLK->pDevices->pDEVBLK[0]->typname,
+                                 pLCSBLK->pDevices->pDEVBLK[0]->devnum,
+                                 pLCSPORT->bPort);
             rc = create_thread( &pLCSPORT->tid, JOINABLE,
-                LCS_PortThread, pLCSPORT, "LCS_PortThread" );
-
+                                LCS_PortThread, pLCSPORT, thread_name );
             if (rc)
             {
                 // "Error in function create_thread(): %s"
@@ -446,6 +459,28 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
         if (pLCSDev->pDEVBLK[1])
             pLCSDev->pDEVBLK[1]->fd = pLCSPORT->fd;
 
+    }   // end of  for (pLCSDev = pLCSBLK->pDevices; pLCSDev; pLCSDev = pLCSDev->pNext)
+
+
+    // If this LCS has one or more SNA devices we need an attention required thread to present Attention interrupts to the guest.
+    for (pLCSDev = pLCSBLK->pDevices; pLCSDev; pLCSDev = pLCSDev->pNext)
+    {
+        if (pLCSDev->bMode == LCSDEV_MODE_SNA)
+        {
+            // Now create the attention required thread to present Attention interrupts to the guest(s).
+            // The thread name uses the read device address of the first device pair.
+            MSGBUF( thread_name, "%s %4.4X AttnThread",
+                                 pLCSBLK->pDevices->pDEVBLK[0]->typname,
+                                 pLCSBLK->pDevices->pDEVBLK[0]->devnum);
+            rc = create_thread( &pLCSBLK->AttnTid, JOINABLE,
+                                LCS_AttnThread, pLCSBLK, thread_name );
+            if (rc)
+            {
+                // "Error in function create_thread(): %s"
+                WRMSG( HHC00102, "E", strerror( rc ));
+            }
+            break;
+        }
     }   // end of  for (pLCSDev = pLCSBLK->pDevices; pLCSDev; pLCSDev = pLCSDev->pNext)
 
     return 0;
@@ -558,6 +593,15 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
     UNREFERENCED( bPrevCode );
     UNREFERENCED( iCCWSeq   );
 
+
+    // Display various information, maybe
+    if (((LCSDEV*)pDEVBLK->dev_data)->pLCSBLK->fDebug)
+    {
+        // HHC03992 "%1d:%04X %s: Code %02X: Flags %02X: Count %08X: Chained %02X: PrevCode %02X: CCWseq %d"
+        WRMSG(HHC03992, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+            bCode, bFlags, sCount, bChained, bPrevCode, iCCWSeq );
+    }
+
     // Intervention required if the device file is not open
     if (1
         && pDEVBLK->fd < 0
@@ -567,6 +611,13 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
     {
         pDEVBLK->sense[0] = SENSE_IR;
         *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
+        // Display various information, maybe
+        if (((LCSDEV*)pDEVBLK->dev_data)->pLCSBLK->fDebug)
+        {
+            // HHC03993 "%1d:%04X %s: Status %02X: Residual %08X: More %02X"
+            WRMSG(HHC03993, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                *pUnitStat, *pResidual, *pMore );
+        }
         return;
     }
 
@@ -753,6 +804,14 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
         *pUnitStat        = CSW_CE | CSW_DE | CSW_UC;
     }
 
+    // Display various information, maybe
+    if (((LCSDEV*)pDEVBLK->dev_data)->pLCSBLK->fDebug)
+    {
+        // HHC03993 "%1d:%04X %s: Status %02X: Residual %08X: More %02X"
+        WRMSG(HHC03993, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+            *pUnitStat, *pResidual, *pMore );
+    }
+
     return;
 }
 
@@ -881,6 +940,28 @@ int  LCS_Close( DEVBLK* pDEVBLK )
         if (pLCSBLK->pszOATFilename) { free( pLCSBLK->pszOATFilename ); pLCSBLK->pszOATFilename = NULL; }
         if (pLCSBLK->pszIPAddress  ) { free( pLCSBLK->pszIPAddress   ); pLCSBLK->pszIPAddress   = NULL; }
 
+
+        if ( pLCSBLK->AttnTid )
+        {
+            TID tid = pLCSBLK->AttnTid;
+            PTT_DEBUG( "CLOSE: closing... ", 000, 000,000 );
+            PTT_DEBUG( "GET  AttnEventLock", 000, 000, 000 );
+            obtain_lock( &pLCSBLK->AttnEventLock );
+            PTT_DEBUG( "GOT  AttnEventLock", 000, 000, 000 );
+            {
+                PTT_DEBUG( "SET  closeInProg  ", 000, 000, 000 );
+                pLCSBLK->fCloseInProgress = 1;
+                PTT_DEBUG( "SIG  AttnEvent", 000, 000, 000 );
+                signal_condition( &pLCSBLK->AttnEvent );
+            }
+            PTT_DEBUG( "REL  AttnEventLock", 000, 000, 000 );
+            release_lock( &pLCSBLK->AttnEventLock );
+            PTT_DEBUG( "join_thread       ", 000, 000, 000 );
+            join_thread( tid, NULL );
+            PTT_DEBUG( "detach_thread     ", 000, 000, 000 );
+            detach_thread( tid );
+        }
+
         free( pLCSBLK );
         pLCSBLK = NULL;
     }
@@ -970,11 +1051,13 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                  U32*    pResidual )
 {
     PLCSDEV     pLCSDEV      = (PLCSDEV) pDEVBLK->dev_data;
-    PLCSPORT    pLCSPORT     = &pLCSDEV->pLCSBLK->Port[ pLCSDEV->bPort ];
+    PLCSBLK     pLCSBLK      = pLCSDEV->pLCSBLK;
+    PLCSPORT    pLCSPORT     = &pLCSBLK->Port[ pLCSDEV->bPort ];
     PLCSHDR     pLCSHDR      = NULL;
     PLCSCMDHDR  pCmdFrame    = NULL;
     PLCSETHFRM  pLCSEthFrame = NULL;
     PETHFRM     pEthFrame    = NULL;
+    PLCSATTN    pLCSATTN     = NULL;
     U16         iOffset      = 0;
     U16         iPrevOffset  = 0;
     U16         iLength      = 0;
@@ -986,7 +1069,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     U16         hwEthernetType;
 
     // Display the data written by the guest, if debug is active.
-    if (pLCSDEV->pLCSBLK->fDebug)
+    if (pLCSBLK->fDebug)
     {
         // "%1d:%04X %s: Accept data of size %d bytes from guest"
         WRMSG(HHC00981, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum,  pDEVBLK->typname, (int)sCount );
@@ -1025,7 +1108,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
             PTT_DEBUG( "WRIT: Cmd frame   ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
 
             // Trace received command frame...
-            if (pLCSDEV->pLCSBLK->fDebug)
+            if (pLCSBLK->fDebug)
             {
                 // "%1d:%04X CTC: lcs command packet received"
                 WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
@@ -1057,7 +1140,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
             if (pCmdFrame->bInitiator == LCS_INITIATOR_LGW)
             {
                 PTT_DEBUG( "CMD initiator LGW", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     // "%1d:%04X CTC: lcs command packet IGNORED (bInitiator == LGW)"
                     WRMSG( HHC00977, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
                 break;
@@ -1069,56 +1152,77 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
 
             case LCS_CMD_STARTUP:       // Start Host
                 PTT_DEBUG( "CMD=StartUp       ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "startup" );
                 LCS_Startup( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_SHUTDOWN:      // Shutdown Host
                 PTT_DEBUG( "CMD=Shutdown      ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "shutdown" );
                 LCS_Shutdown( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_STRTLAN:       // Start LAN
                 PTT_DEBUG( "CMD=Start LAN     ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan" );
                 LCS_StartLan( pLCSDEV, pCmdFrame, iLength );
                 break;
 
-            case LCS_CMD_STOPLAN:       // Stop  LAN
-                PTT_DEBUG( "CMD=Stop  LAN     ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+            case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
+                PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                if (pLCSBLK->fDebug)
+                    WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
+                LCS_StartLan( pLCSDEV, pCmdFrame, iLength );
+                break;
+
+            case LCS_CMD_STOPLAN:       // Stop LAN
+                PTT_DEBUG( "CMD=Stop LAN      ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan" );
+                LCS_StopLan( pLCSDEV, pCmdFrame, iLength );
+                break;
+
+            case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
+                PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                if (pLCSBLK->fDebug)
+                    WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
                 LCS_StopLan( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_QIPASSIST:     // Query IP Assists
                 PTT_DEBUG( "CMD=Query IPAssist", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "query IP assist" );
                 LCS_QueryIPAssists( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_LANSTAT:       // LAN Stats
                 PTT_DEBUG( "CMD=LAN Statistics", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics" );
+                LCS_LanStats( pLCSDEV, pCmdFrame, iLength );
+                break;
+
+            case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
+                PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                if (pLCSBLK->fDebug)
+                    WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
                 LCS_LanStats( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_SETIPM:        // Set IP Multicast
                 PTT_DEBUG( "CMD=Set IP Multicast", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "set multicast" );
                 LCS_AddMulticast( pLCSDEV, pCmdFrame, iLength );
                 break;
 
             case LCS_CMD_DELIPM:        // Delete IP Multicast
                 PTT_DEBUG( "CMD=Delete IP Multicast", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                     WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "delete multicast" );
                 LCS_DelMulticast( pLCSDEV, pCmdFrame, iLength );
                 break;
@@ -1129,7 +1233,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
             case LCS_CMD_TIMING:        // Timing request
             default:
                 PTT_DEBUG( "*CMD=Unsupported! ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                if (pLCSDEV->pLCSBLK->fDebug)
+                if (pLCSBLK->fDebug)
                 {
                     // "%1d:%04X CTC: executing command %s"
                     MSGBUF( buf, "other (0x%2.2X)", pCmdFrame->bCmdCode );
@@ -1139,6 +1243,49 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                 break;
 
             } // end switch (LCS Command Frame cmd code)
+
+            // The command reply has been enqueued in the LCSDEV->bFrameBuffer.
+            // For IP the read device will soon, if it hasn't already, present
+            // the reply to the guest. However, for SNA we must generate an
+            // Attention interrupt, to trigger the guest into issuing a Read.
+            // Prompt LCS_AttnThread to generate the Attention, if necessary.
+            if (pLCSDEV->bMode == LCSDEV_MODE_SNA)
+            {
+
+                /* Create an LCSATTN block */
+                pLCSATTN = malloc( sizeof( LCSATTN ) );
+                if (!pLCSATTN) break;  /* FixMe! Produce a message? */
+                pLCSATTN->pNext = NULL;
+                pLCSATTN->pDevice = pLCSDEV;
+
+                if (pLCSBLK->fDebug)                                                                         /* FixMe! Remove! */
+                  net_data_trace( pDEVBLK, (BYTE*)pLCSATTN, sizeof( LCSATTN ), ' ', 'D', "LCSATTN in", 0 );  /* FixMe! Remove! */
+
+                /* Add LCSATTN block to start of chain */
+                PTT_DEBUG( "GET  AttnLock", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                obtain_lock( &pLCSBLK->AttnLock );
+                PTT_DEBUG( "GOT  AttnLock", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                {
+                    PTT_DEBUG( "ADD  Attn", pLCSATTN, pDEVBLK->devnum, pLCSPORT->bPort );
+                    pLCSATTN->pNext = pLCSBLK->pAttns;
+                    pLCSBLK->pAttns = pLCSATTN;
+                }
+                PTT_DEBUG( "REL  AttnLock", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                release_lock( &pLCSBLK->AttnLock );
+
+                /* Signal the LCS_AttnThread to process the LCSATTN block(s) on the chain */
+                PTT_DEBUG( "GET  AttnEventLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                obtain_lock( &pLCSBLK->AttnEventLock );
+                PTT_DEBUG( "GOT  AttnEventLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                {
+                    PTT_DEBUG( "SIG  AttnEvent", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                    signal_condition( &pLCSBLK->AttnEvent );
+                }
+                PTT_DEBUG( "REL  AttnEventLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
+                release_lock( &pLCSBLK->AttnEventLock );
+
+            }
+
             break; // end case LCS_FRMTYP_CMD
 
         case LCS_FRMTYP_ENET:   // Ethernet Passthru
@@ -1167,7 +1314,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
             }
 
             // Trace Ethernet frame before sending to TAP device
-            if (pLCSDEV->pLCSBLK->fDebug)
+            if (pLCSBLK->fDebug)
             {
                 FETCH_HW( hwEthernetType, pEthFrame->hwEthernetType );
                 SET_CPKTTYPE( hwEthernetType, cPktType );
@@ -1223,7 +1370,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
 
     PTT_TIMING( "end write",  0, 0, 0 );
     PTT_DEBUG( "WRIT EXIT         ", 000, pDEVBLK->devnum, -1 );
-}
+}   // End of LCS_Write
 
 // ====================================================================
 //                         LCS_Startup
@@ -1361,13 +1508,15 @@ static void  UpdatePortStarted( int bStarted, DEVBLK* pDEVBLK, PLCSPORT pLCSPORT
 
 // ====================================================================
 //                         LCS_StartLan
+//
+// LCS_StartLan is used for both IP and SNA Start LAN commands.
 // ====================================================================
 
 static void  LCS_StartLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 {
-    LCSSTDFRM   Reply;
+    LCSSTRTFRM  Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
-    PLCSSTDFRM  pLCSSTDFRM = (PLCSSTDFRM)&Reply;
+    PLCSSTRTFRM pLCSSTRTFRM = (PLCSSTRTFRM)&Reply;
     PLCSPORT    pLCSPORT;
 #ifdef OPTION_TUNTAP_DELADD_ROUTES
     PLCSRTE     pLCSRTE;
@@ -1376,11 +1525,20 @@ static void  LCS_StartLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     int         nIFFlags;
     U8          fStartPending = 0;
 
-    INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
 
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
     pDEVBLK  = pLCSDEV->pDEVBLK[ LCSDEV_WRITE_SUBCHANN ];
     if (!pDEVBLK) pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];  /* SNA has only one device */
+
+    INIT_REPLY_FRAME( pLCSSTRTFRM, iReplyLen, pCmdFrame, iCmdLen );
+
+    if (pCmdFrame->bCmdCode == LCS_CMD_STRTLAN_SNA)
+    {
+        pLCSSTRTFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+        STORE_HW( pLCSSTRTFRM->hwBufferSize, pLCSDEV->iMaxFrameBufferSize );
+        STORE_FW( pLCSSTRTFRM->fwUnknown, 0x00000800 );  /* 0x0800 to 0xFFFF */
+        iReplyLen = sizeof(Reply);
+    }
 
     // Serialize access to eliminate ioctl errors
     PTT_DEBUG(        "GET  PortDataLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
@@ -1462,7 +1620,7 @@ static void  LCS_StartLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     // the reply to its cmd BEFORE it sees any Ethernet packets that might
     // result from its StartLAN cmd.
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen );
+    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTRTFRM, iReplyLen );
 
     if (fStartPending)
         UpdatePortStarted( TRUE, pDEVBLK, pLCSPORT );
@@ -1470,6 +1628,8 @@ static void  LCS_StartLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 
 // ====================================================================
 //                         LCS_StopLan
+//
+// LCS_StopLan is used for both IP and SNA Stop LAN commands.
 // ====================================================================
 
 static void  LCS_StopLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
@@ -1483,11 +1643,17 @@ static void  LCS_StopLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 #endif // OPTION_TUNTAP_DELADD_ROUTES
     DEVBLK*     pDEVBLK;
 
-    INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
 
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[ pLCSDEV->bPort ];
     pDEVBLK  =  pLCSDEV->pDEVBLK[ LCSDEV_WRITE_SUBCHANN ];
     if (!pDEVBLK) pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];  /* SNA has only one device */
+
+    INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
+
+    if (pCmdFrame->bCmdCode == LCS_CMD_STOPLAN_SNA)
+    {
+        pLCSSTDFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+    }
 
     // Serialize access to eliminate ioctl errors
     PTT_DEBUG(        "GET  PortDataLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
@@ -1575,96 +1741,132 @@ static void  LCS_QueryIPAssists( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
 
 // ====================================================================
 //                         LCS_LanStats
+//
+// LCS_LanStats is used for both IP and SNA LAN statistics.
 // ====================================================================
 
 static void  LCS_LanStats( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 {
-    LCSLSTFRM  Reply;
+
+    union {
+        LCSLSTFRM  ip;
+        LCSLSSFRM  sna;
+    } Reply;
     int        iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
     PLCSLSTFRM pLCSLSTFRM = (PLCSLSTFRM)&Reply;
+    PLCSLSSFRM pLCSLSSFRM = (PLCSLSSFRM)pLCSLSTFRM;
     PLCSPORT   pLCSPORT;
-    int        fd, rc;
-    ifreq      ifr;
     BYTE*      pPortMAC;
     BYTE*      pIFaceMAC;
+    int        fd, rc, success;
+    ifreq      ifr;
 
-    INIT_REPLY_FRAME( pLCSLSTFRM, iReplyLen, pCmdFrame, iCmdLen );
 
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-
-    fd = socket( AF_INET, SOCK_STREAM, IPPROTO_IP );
-
-    if (fd == -1)
-    {
-        // "CTC: error in function %s: %s"
-        rc = HSO_errno;
-        WRMSG( HHC00940, "E", "socket()", strerror( rc ) );
-        STORE_HW( pLCSLSTFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
-        return;
-    }
-
-    memset( &ifr, 0, sizeof( ifr ) );
-
-    STRLCPY( ifr.ifr_name, pLCSPORT->szNetIfName );
-
-    pPortMAC  = (BYTE*) &pLCSPORT->MAC_Address;
+    pPortMAC = (BYTE*) &pLCSPORT->MAC_Address;
+    pIFaceMAC = pPortMAC;
 
     /* Not all systems can return the hardware address of an interface. */
 #if defined(SIOCGIFHWADDR)
 
-    if ((rc = TUNTAP_IOCtl( fd, SIOCGIFHWADDR, (char*)&ifr )) != 0)
+    while (1)
     {
-        // "CTC: ioctl %s failed for device %s: %s"
-        rc = HSO_errno;
-        WRMSG( HHC00941, "E", "SIOCGIFHWADDR", pLCSPORT->szNetIfName, strerror( rc ) );
-        STORE_HW( pLCSLSTFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
-        return;
+        fd = socket( AF_INET, SOCK_STREAM, IPPROTO_IP );
+
+        if (fd == -1)
+        {
+            // "CTC: error in function %s: %s"
+            rc = HSO_errno;
+            WRMSG( HHC00940, "E", "socket()", strerror( rc ) );
+            success = FALSE;
+            break;
+        }
+
+        memset( &ifr, 0, sizeof( ifr ) );
+        STRLCPY( ifr.ifr_name, pLCSPORT->szNetIfName );
+
+        rc = TUNTAP_IOCtl( fd, SIOCGIFHWADDR, (char*)&ifr );
+
+        close( fd );
+
+        if (rc != 0)
+        {
+            // "CTC: ioctl %s failed for device %s: %s"
+            rc = HSO_errno;
+            WRMSG( HHC00941, "E", "SIOCGIFHWADDR", pLCSPORT->szNetIfName, strerror( rc ) );
+            success = FALSE;
+            break;
+        }
+
+        pIFaceMAC  = (BYTE*) ifr.ifr_hwaddr.sa_data;
+        rc = 0;
+        success = TRUE;
+        break;
     }
-    pIFaceMAC  = (BYTE*) ifr.ifr_hwaddr.sa_data;
 
 #else // !defined(SIOCGIFHWADDR)
 
-    pIFaceMAC  = pPortMAC;
+    rc = 0;
+    success = TRUE;
 
 #endif // defined(SIOCGIFHWADDR)
 
-    /* Report what MAC address we will really be using */
-    // "CTC: lcs device '%s' using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-    WRMSG( HHC00942, "I", pLCSPORT->szNetIfName, *(pIFaceMAC+0),*(pIFaceMAC+1),
-                                    *(pIFaceMAC+2),*(pIFaceMAC+3),
-                                    *(pIFaceMAC+4),*(pIFaceMAC+5));
-
-    /* Issue warning if different from specified value */
-    if (memcmp( pPortMAC, pIFaceMAC, IFHWADDRLEN ) != 0)
+    if (success)
     {
-        if (pLCSPORT->fLocalMAC)
+        /* Report what MAC address we will really be using */
+        // "CTC: lcs device '%s' using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+        WRMSG( HHC00942, "I", pLCSPORT->szNetIfName, *(pIFaceMAC+0),*(pIFaceMAC+1),
+                                        *(pIFaceMAC+2),*(pIFaceMAC+3),
+                                        *(pIFaceMAC+4),*(pIFaceMAC+5));
+
+        /* Issue warning if different from specified value */
+        if (memcmp( pPortMAC, pIFaceMAC, IFHWADDRLEN ) != 0)
         {
-            // "CTC: lcs device %s not using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-            WRMSG( HHC00943, "W", pLCSPORT->szNetIfName, *(pPortMAC+0),*(pPortMAC+1),
-                                            *(pPortMAC+2),*(pPortMAC+3),
-                                            *(pPortMAC+4),*(pPortMAC+5));
+            if (pLCSPORT->fLocalMAC)
+            {
+                // "CTC: lcs device %s not using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                WRMSG( HHC00943, "W", pLCSPORT->szNetIfName, *(pPortMAC+0),*(pPortMAC+1),
+                                                *(pPortMAC+2),*(pPortMAC+3),
+                                                *(pPortMAC+4),*(pPortMAC+5));
+            }
+
+            memcpy( pPortMAC, pIFaceMAC, IFHWADDRLEN );
+
+            snprintf(pLCSPORT->szMACAddress, sizeof(pLCSPORT->szMACAddress),
+                "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X", *(pPortMAC+0), *(pPortMAC+1),
+                *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
         }
-
-        memcpy( pPortMAC, pIFaceMAC, IFHWADDRLEN );
-
-        snprintf(pLCSPORT->szMACAddress, sizeof(pLCSPORT->szMACAddress),
-            "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X", *(pPortMAC+0), *(pPortMAC+1),
-            *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
     }
 
-    memcpy( pLCSLSTFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
+    INIT_REPLY_FRAME( pLCSLSTFRM, iReplyLen, pCmdFrame, iCmdLen );
 
     /* Respond with a different MAC address for the LCS side */
     /* unless the TAP mechanism is designed as such          */
     /* cf : hostopts.h for an explanation                    */
-
+    if (pCmdFrame->bCmdCode == LCS_CMD_LANSTAT_SNA)
+    {
+        iReplyLen = sizeof(Reply.sna);
+        pLCSLSSFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+        STORE_HW( pLCSLSSFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
+        pLCSLSSFRM->bUnknown1 = 0x01;  /* Number of MAC's? */
+        pLCSLSSFRM->bUnknown2 = 0x04;  /* SAP? */
+        pLCSLSSFRM->bUnknown3 = 0x00;
+        pLCSLSSFRM->bUnknown7 = 0x06;  /* MAC length? */
+        memcpy( pLCSLSSFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
 #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
-
-    pLCSLSTFRM->MAC_Address[5]++;
-
+        pLCSLSSFRM->MAC_Address[5]++;
 #endif
-
-    // FIXME: Really should read /proc/net/dev to retrieve actual stats
+    }
+    else
+    {
+        iReplyLen = sizeof(Reply.ip);
+        STORE_HW( pLCSLSTFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
+        memcpy( pLCSLSTFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
+#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
+        pLCSLSTFRM->MAC_Address[5]++;
+#endif
+        // FIXME: Really should read /proc/net/dev to retrieve actual stats
+    }
 
     ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSLSTFRM, iReplyLen );
 }
@@ -2372,6 +2574,205 @@ static void*  LCS_PortThread( void* arg)
     return NULL;
 
 } // end of LCS_PortThread
+
+// ====================================================================
+//                       LCS_AttnThread
+// ====================================================================
+// This is the thread that processes LCS commands from the guest.
+//
+//
+//
+// --------------------------------------------------------------------
+
+static void*  LCS_AttnThread( void* arg)
+{
+
+    PLCSBLK     pLCSBLK;
+    PLCSATTN    pLCSATTN;
+    PLCSATTN    pLCSATTNprev, pLCSATTNcurr, pLCSATTNnext;
+    PLCSDEV     pLCSDEV;
+    DEVBLK*     pDEVBLK;
+
+
+    {                                                                                                        /* !!!! */
+        char    tmp[256];                                                                                    /* !!!! */
+        snprintf( (char*)tmp, 256, "LCS_AttnThread activated" );                                             /* !!!! */
+        WRMSG(HHC03984, "D", tmp );                                                                          /* !!!! */
+    }                                                                                                        /* !!!! */
+
+    PTT_DEBUG( "ATTNTHRD: ENTRY", 000, 000, 000 );
+
+    /* Point to the LCSBLK and obtain the pid of this thread. */
+    pLCSBLK = (PLCSBLK) arg;
+    pLCSBLK->AttnPid = getpid();
+
+    for (;;)
+    {
+
+        /* */
+        PTT_DEBUG( "GET  AttnEventLock", 000, 000, 000 );
+        obtain_lock( &pLCSBLK->AttnEventLock );
+        PTT_DEBUG( "GOT  AttnEventLock", 000, 000, 000 );
+        {
+            while (1)
+            {
+                if ( pLCSBLK->fCloseInProgress )
+                {
+                    PTT_DEBUG( "ATTNTHRD Closing...", 000, 000, 000 );
+                    break;
+                }
+
+                if ( pLCSBLK->pAttns )
+                {
+                    PTT_DEBUG( "ATTNTHRD Attn...", 000, 000, 000 );
+                    break;
+                }
+
+                PTT_DEBUG( "WAIT AttnEventLock", 000, 000, 000 );
+                timed_wait_condition_relative_usecs
+                (
+                    &pLCSBLK->AttnEvent,         // ptr to condition to wait on
+                    &pLCSBLK->AttnEventLock,     // ptr to controlling lock (must be held!)
+                    3*1000*1000,                 // max #of microseconds to wait, i.e. 3 seconds
+                    NULL                         // [OPTIONAL] ptr to tod value (may be NULL)
+                );
+                PTT_DEBUG( "WOKE AttnEventLock", 000, 000, 000 );
+
+            } // end while (1)
+        }
+        PTT_DEBUG( "REL  AttnEventLock", 000, 000, 000 );
+        release_lock( &pLCSBLK->AttnEventLock );
+
+        /* Exit when told... */
+        if ( pLCSBLK->fCloseInProgress )
+        {
+            PTT_DEBUG( "ATTNTHRD Closing...", 000, 000, 000 );
+            break;
+        }
+
+        /* Remove the chain of LCSATTN blocks */
+        PTT_DEBUG( "GET  AttnLock", 000, 000, 000 );
+        obtain_lock( &pLCSBLK->AttnLock );
+        PTT_DEBUG( "GOT  AttnLock", 000, 000, 000 );
+        {
+            pLCSATTN = pLCSBLK->pAttns;
+            pLCSBLK->pAttns = NULL;
+            PTT_DEBUG( "REM  Attn (All)", pLCSATTN, 000, 000 );
+        }
+        PTT_DEBUG( "REL  AttnLock", 000, 000, 000 );
+        release_lock( &pLCSBLK->AttnLock );
+
+        /* Reverse the chain of LCSATTN blocks */
+        if (pLCSATTN)
+        {
+            pLCSATTNprev = NULL;
+            pLCSATTNcurr = pLCSATTN;
+            while( pLCSATTNcurr ) {
+                pLCSATTNnext = pLCSATTNcurr->pNext;
+                pLCSATTNcurr->pNext = pLCSATTNprev;
+                pLCSATTNprev = pLCSATTNcurr;
+                pLCSATTNcurr = pLCSATTNnext;
+            }
+            pLCSATTN = pLCSATTNprev;
+        }
+
+        /* Process the chain of LCSATTN blocks */
+        while (pLCSATTN)
+        {
+            /* Point to the next LCSATTN block in the chain, assuming there is one */
+            pLCSATTNnext = pLCSATTN->pNext;
+
+            /* Point to the LCSDEV and the read DEVBLK for the command */
+            pLCSDEV = pLCSATTN->pDevice;
+            pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+
+                if (pLCSBLK->fDebug)                                                                         /* FixMe! Remove! */
+                  net_data_trace( pDEVBLK, (BYTE*)pLCSATTN, sizeof( LCSATTN ), ' ', 'D', "LCSATTN out", 0 ); /* FixMe! Remove! */
+
+            PTT_DEBUG( "PRC  Attn", pLCSATTN, pDEVBLK->devnum, 000 );
+
+    /* --------------------------------------------------------------------- */
+    {
+        int                i;
+        int                working_attn_rc = -1;  /* device_attention RC    */
+        int                attn_can = -1;         /* = 1 : Atttention Cancelled */
+        int                busy_waits = -1;       /* Number of times waited for */
+                                                  /* a Busy condition to end    */
+
+                working_attn_rc = 1;
+                attn_can = 0;
+                for( busy_waits = 0;
+                     ( working_attn_rc == 1 ) &&
+                     ( attn_can == 0 ) &&
+                     ( busy_waits < 20 ) ;
+                     busy_waits++ )
+                {
+
+                    // To circumvent a bug in VM/SP causing SIO timeout errors, we can
+                    // insert a 200 msec delay or so allowing the previous CCW to complete,
+                    // which needs to be configured using the CTCE option ATTNDELAY <nnn>
+//                  if( pDEVBLK->ctce_attn_delay && busy_waits == 0 )
+//                  {
+//                      usleep( pDEVBLK->ctce_attn_delay );
+//                  }
+
+                    working_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
+                    PTT_DEBUG( "Raise Attn   ", 000, pDEVBLK->devnum, working_attn_rc );
+
+    {                                                                                                        /* !!!! */
+        char    tmp[256];                                                                                    /* !!!! */
+        snprintf( (char*)tmp, 256, "device_attention rc=%d  %d", working_attn_rc, busy_waits );              /* !!!! */
+        WRMSG(HHC03991, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname, tmp );          /* !!!! */
+    }                                                                                                        /* !!!! */
+
+                    // ATTN RC=1 means a device busy status did
+                    // appear so that the signal did not work.
+                    // We will retry after some (increasingly)
+                    // small amount of time.
+                    if( working_attn_rc == 1 )
+                    {
+                        if( busy_waits == 0 )
+                        {
+                            i = 10;
+//                          i = 50;
+                        }
+                        else
+                        {
+                            i = i * 2;
+                        }
+                        usleep(i);
+
+                        // Cancel the ATTN in case a CCW program
+                        // has started in the mean time.
+//                      if ( pDEVBLK->ctce_ccw_flags_cc )
+//                      {
+//                          attn_can = 1;
+//                      }
+                    }
+                }
+
+    }
+    /* --------------------------------------------------------------------- */
+
+            /* Free the LCSATTN block that has just been processed */
+            free (pLCSATTN);
+
+            /* Point to the next LCSATTN block in the chain, assuming there is one */
+            pLCSATTN = pLCSATTNnext;
+        }  // end while (pLCSATTN)
+
+    }  // end for (;;)
+
+    PTT_DEBUG( "ATTNTHRD: EXIT", 000, 000, 000 );
+
+    {                                                                                                        /* !!!! */
+        char    tmp[256];                                                                                    /* !!!! */
+        snprintf( (char*)tmp, 256, "LCS_AttnThread terminated" );                                            /* !!!! */
+        WRMSG(HHC03984, "D", tmp );                                                                          /* !!!! */
+    }                                                                                                        /* !!!! */
+
+    return NULL;
+} // End of LCS_AttnThread
 
 // ====================================================================
 //                       LCS_EnqueueEthFrame

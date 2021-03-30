@@ -61,12 +61,14 @@ struct  _LCSRTE;            // LCS Routing Entries
 struct  _LCSHDR;            // LCS Frame Header
 struct  _LCSCMDHDR;         // LCS Command Frame Header
 struct  _LCSSTDFRM;         // LCS Standard Command Frame
-struct  _LCSSTRTFRM;        // LCS Startup Command Frame
+struct  _LCSSTRTFRM;        // LCS Startup & Start LAN Command Frames
 struct  _LCSQIPFRM;         // LCS Query IP Assists Command Frame
 struct  _LCSLSTFRM;         // LCS LAN Statistics Command Frame
+struct  _LCSLSSFRM;         // LCS LAN Statistics SNA Command Frame
 struct  _LCSIPMPAIR;        // LCS IP Multicast Pair structure
 struct  _LCSIPMFRM;         // LCS Set IP Multicast Command Frame
 struct  _LCSETHFRM;         // LCS Ethernet Passthru Frame
+struct  _LCSATTN;           // LCS Attention Required
 
 typedef struct  _LCSBLK     LCSBLK,     *PLCSBLK;
 typedef struct  _LCSDEV     LCSDEV,     *PLCSDEV;
@@ -78,9 +80,11 @@ typedef struct  _LCSSTDFRM  LCSSTDFRM,  *PLCSSTDFRM;
 typedef struct  _LCSSTRTFRM LCSSTRTFRM, *PLCSSTRTFRM;
 typedef struct  _LCSQIPFRM  LCSQIPFRM,  *PLCSQIPFRM;
 typedef struct  _LCSLSTFRM  LCSLSTFRM,  *PLCSLSTFRM;
+typedef struct  _LCSLSSFRM  LCSLSSFRM,  *PLCSLSSFRM;
 typedef struct  _LCSIPMPAIR LCSIPMPAIR, *PLCSIPMPAIR;
 typedef struct  _LCSIPMFRM  LCSIPMFRM,  *PLCSIPMFRM;
 typedef struct  _LCSETHFRM  LCSETHFRM,  *PLCSETHFRM;
+typedef struct  _LCSATTN    LCSATTN,    *PLCSATTN;
 
 
 // --------------------------------------------------------------------
@@ -497,6 +501,17 @@ struct  _LCSRTE
 
 
 // --------------------------------------------------------------------
+// LCS Attention Required                      (host byte order)
+// --------------------------------------------------------------------
+
+struct _LCSATTN                           // LCS Attention Required
+{
+    PLCSATTN    pNext;                    // -> Next in chain
+    PLCSDEV     pDevice;                  // -> Device
+};
+
+
+// --------------------------------------------------------------------
 // LCSBLK - Common Storage for LCS Emulation   (host byte order)
 // --------------------------------------------------------------------
 
@@ -513,6 +528,17 @@ struct  _LCSBLK
     int         icDevices;                // Number of devices
     int         iKernBuff;                // Kernel buffer in K bytes.
     int         iIOBuff;                  // I/O buffer in K bytes.
+
+    LOCK        AttnLock;                 // Attention LOCK
+    PLCSATTN    pAttns;                   // -> Attention chain
+
+    LOCK        AttnEventLock;            // Attention event LOCK
+    COND        AttnEvent;                // Attention event signal
+
+    TID         AttnTid;                  // Attention Thread ID
+    pid_t       AttnPid;                  // Attention Thread pid
+
+    u_int       fCloseInProgress:1;       // Close in progress
 
     PLCSDEV     pDevices;                 // -> Device chain
     LCSPORT     Port[LCS_MAX_PORTS];      // Port Blocks
@@ -534,9 +560,9 @@ struct  _LCSBLK
 
 struct _LCSHDR      // *ALL* LCS Frames start with the following header
 {
-    HWORD       hwOffset;               // Offset to next frame or 0
-    BYTE        bType;                  // (see below #defines)
-    BYTE        bSlot;                  // (i.e. port)
+    HWORD       hwOffset;               //  +0  Offset to next frame or 0
+    BYTE        bType;                  //  +2  (see below #defines)
+    BYTE        bSlot;                  //  +3  (i.e. port)
 } ATTRIBUTE_PACKED;
 
 
@@ -553,21 +579,21 @@ struct _LCSHDR      // *ALL* LCS Frames start with the following header
 
 struct _LCSCMDHDR    // All LCS *COMMAND* Frames start with this header
 {
-    LCSHDR      bLCSHdr;                // LCS Frame header
+    LCSHDR      bLCSHdr;                //  +0  LCS Frame header
 
-    BYTE        bCmdCode;               // (see below #defines)
-    BYTE        bInitiator;             // (see below #defines)
-    HWORD       hwSequenceNo;
-    HWORD       hwReturnCode;
+    BYTE        bCmdCode;               //  +4  (see below #defines)
+    BYTE        bInitiator;             //  +5  (see below #defines)
+    HWORD       hwSequenceNo;           //  +6
+    HWORD       hwReturnCode;           //  +8
 
-    BYTE        bLanType;               // usually LCS_FRMTYP_ENET
-    BYTE        bRelAdapterNo;          // (i.e. port)
+    BYTE        bLanType;               //  +A  usually LCS_FRMTYP_ENET
+    BYTE        bRelAdapterNo;          //  +B  (i.e. port)
 } ATTRIBUTE_PACKED;
 
 
 #define  LCS_CMD_TIMING         0x00        // Timing request
 #define  LCS_CMD_STRTLAN        0x01        // Start LAN
-#define  LCS_CMD_STOPLAN        0x02        // Stop  LAN
+#define  LCS_CMD_STOPLAN        0x02        // Stop LAN
 #define  LCS_CMD_GENSTAT        0x03        // Generate Stats
 #define  LCS_CMD_LANSTAT        0x04        // LAN Stats
 #define  LCS_CMD_LISTLAN        0x06        // List LAN
@@ -578,8 +604,14 @@ struct _LCSCMDHDR    // All LCS *COMMAND* Frames start with this header
 #define  LCS_CMD_SETIPM         0xB4        // Set IP Multicast
 #define  LCS_CMD_DELIPM         0xB5        // Delete IP Multicast
 
+#define  LCS_CMD_STRTLAN_SNA    0x41        // Start LAN SNA
+#define  LCS_CMD_STOPLAN_SNA    0x42        // Stop LAN SNA
+#define  LCS_CMD_LANSTAT_SNA    0x44        // LAN Stats SNA
+
 #define  LCS_INITIATOR_TCPIP    0x00        // TCP/IP
 #define  LCS_INITIATOR_LGW      0x01        // LAN Gateway
+
+#define  LCS_INITIATOR_SNA      0x80        // SNA
 
 // --------------------------------------------------------------------
 // LCS Standard Command Frame                   (network byte order)
@@ -597,16 +629,17 @@ struct _LCSSTDFRM
 
 
 // --------------------------------------------------------------------
-// LCS Startup Command Frame                    (network byte order)
+// LCS Startup & Start LAN Command Frames       (network byte order)
 // --------------------------------------------------------------------
 
 struct _LCSSTRTFRM
 {
-    LCSCMDHDR   bLCSCmdHdr;             // LCS Command Frame header
+    LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
-    HWORD       hwBufferSize;
-    BYTE        _unused2[6];
-} ATTRIBUTE_PACKED;
+    HWORD       hwBufferSize;           //   C
+    BYTE        _unused[6];             //   E
+    FWORD       fwUnknown;              //  14
+} ATTRIBUTE_PACKED;                     //  18
 
 
 // --------------------------------------------------------------------
@@ -625,25 +658,38 @@ struct  _LCSQIPFRM
 
 
 // --------------------------------------------------------------------
-// LCS LAN Statistics Command Frame             (network byte order)
+// LCS LAN Statistics Command Frames            (network byte order)
 // --------------------------------------------------------------------
 
 struct  _LCSLSTFRM
 {
-    LCSCMDHDR   bLCSCmdHdr;             // LCS Command Frame header
+    LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
-    BYTE        _unused1[10];
-    MAC         MAC_Address;            // MAC Address of Adapter
-    FWORD       fwPacketsDeblocked;
-    FWORD       fwPacketsBlocked;
-    FWORD       fwTX_Packets;
-    FWORD       fwTX_Errors;
-    FWORD       fwTX_PacketsDiscarded;
-    FWORD       fwRX_Packets;
-    FWORD       fwRX_Errors;
-    FWORD       fwRX_DiscardedNoBuffs;
-    U32         fwRX_DiscardedTooLarge;
-} ATTRIBUTE_PACKED;
+    BYTE        _unused1[10];           //  +C
+    MAC         MAC_Address;            // +16  MAC Address of Adapter
+    FWORD       fwPacketsDeblocked;     // +1C_
+    FWORD       fwPacketsBlocked;       // +20
+    FWORD       fwTX_Packets;           // +24
+    FWORD       fwTX_Errors;            // +28
+    FWORD       fwTX_PacketsDiscarded;  // +2C
+    FWORD       fwRX_Packets;           // +30
+    FWORD       fwRX_Errors;            // +34
+    FWORD       fwRX_DiscardedNoBuffs;  // +38
+    U32         fwRX_DiscardedTooLarge; // +3C
+} ATTRIBUTE_PACKED;                     // +40
+
+struct  _LCSLSSFRM
+{
+    LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
+
+    BYTE        bUnknown1;              //  +C
+    BYTE        bUnknown2;              //  +D
+    BYTE        bUnknown3;              //  +E
+    BYTE        _unused1[3];            //  +F
+    BYTE        bUnknown7;              // +12
+    MAC         MAC_Address;            // +13  MAC Address of Adapter
+    BYTE        _unused2[1];            // +19
+} ATTRIBUTE_PACKED;                     // +1A
 
 
 // --------------------------------------------------------------------
