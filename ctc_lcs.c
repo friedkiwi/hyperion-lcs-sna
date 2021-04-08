@@ -2873,14 +2873,21 @@ static void*  LCS_PortThread( void* arg)
                 }
                 else  // i.e hwEthernetType < 1536
                 {
-                    // EtherType indicates the size of the payload.
+                    // EtherType indicates the size of the payload, which should have
+                    // a value of 46 to 1500 inclusive. However, frames have been seen
+                    // with EtherType equal to three (0x0003), which was presumably the
+                    // size of the following the 802.2 LLC fields, rather than the size
+                    // of the entire payload.
+                    // The LLC fields are a 1-byte Destination Service Access Point
+                    // (DSAP), a 1-byte Source Service Access Point (SSAP), and a 1-
+                    // or 2-byte Control Field.
                     // We will assume this is an 802.3 frame containing SNA traffic.
                     pMAC = pEthFrame->bDestMAC;
 
                     if (pLCSPORT->pLCSBLK->fDebug && !bReported)
                     {
-                        // "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-                        WRMSG( HHC00948, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
+                        // "CTC: lcs device port %2.2X: SNA frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                        WRMSG( HHC00949, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
                         bReported = 1;
                     }
 
