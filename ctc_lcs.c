@@ -136,20 +136,23 @@ static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK,
     }                                                                \
     while (0)
 
-#define ENQUEUE_REPLY_FRAME( pLCSDEV, pReply, iReplyLen )            \
-                                                                     \
+#define ENQUEUE_REPLY_FRAME( pLCSDEV, pReply, iReplyLen )                   \
     LCS_EnqueueReplyFrame( (pLCSDEV), (PLCSCMDHDR) (pReply), (iReplyLen) )
 
-#define SET_CPKTTYPE( ethtyp, pkttyp )                                        \
-    do                                                                        \
-    {                                                                         \
-             if ( (ethtyp) == ETH_TYPE_IP   ) STRLCPY( (pkttyp), "IPv4"    ); \
-        else if ( (ethtyp) == ETH_TYPE_IPV6 ) STRLCPY( (pkttyp), "IPv6"    ); \
-        else if ( (ethtyp) == ETH_TYPE_ARP  ) STRLCPY( (pkttyp), "ARP"     ); \
-        else if ( (ethtyp) == ETH_TYPE_RARP ) STRLCPY( (pkttyp), "RARP"    ); \
-        else if ( (ethtyp) == ETH_TYPE_SNA  ) STRLCPY( (pkttyp), "SNA"     ); \
-        else                                  STRLCPY( (pkttyp), "unknown" ); \
-    }                                                                         \
+#define SET_CPKTTYPE( ethtyp, pkttyp )                                             \
+    do                                                                             \
+    {                                                                              \
+        if ( (ethtyp) >= 1536)                                                     \
+        {                                                                          \
+                 if ( (ethtyp) == ETH_TYPE_IP   ) STRLCPY( (pkttyp), "IPv4"    );  \
+            else if ( (ethtyp) == ETH_TYPE_IPV6 ) STRLCPY( (pkttyp), "IPv6"    );  \
+            else if ( (ethtyp) == ETH_TYPE_ARP  ) STRLCPY( (pkttyp), "ARP"     );  \
+            else if ( (ethtyp) == ETH_TYPE_RARP ) STRLCPY( (pkttyp), "RARP"    );  \
+            else if ( (ethtyp) == ETH_TYPE_SNA  ) STRLCPY( (pkttyp), "SNA"     );  \
+            else                                  STRLCPY( (pkttyp), "unknown" );  \
+        }                                                                          \
+        else                                      STRLCPY( (pkttyp), "802.3" );    \
+    }                                                                              \
     while (0)
 
 // ====================================================================
