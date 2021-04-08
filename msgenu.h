@@ -801,7 +801,7 @@ LOGM_DLL_IMPORT int  panel_command_capture( char* cmd, char** resp, bool quiet )
 #define HHC00946 "CTC: lcs device port %2.2X: IPv4 frame received for %s"
 #define HHC00947 "CTC: lcs device port %2.2X: ARP frame received for %s"
 #define HHC00948 "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-#define HHC00949 "CTC: lcs device port %2.2X: SNA frame received"
+#define HHC00949 "CTC: lcs device port %2.2X: SNA frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
 #define HHC00950 "CTC: lcs device port %2.2X: no match found, selecting %s %4.4X"
 #define HHC00951 "CTC: lcs device port %2.2X: no match found, discarding frame"
 #define HHC00952 "CTC: lcs device port %2.2X: enqueing frame to device %4.4X %s"

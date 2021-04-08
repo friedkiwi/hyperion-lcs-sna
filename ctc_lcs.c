@@ -98,6 +98,7 @@ static void     LCS_DefaultCmdProc( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int i
 static void     LCS_StartLan_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 static void     LCS_StopLan_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 static void     LCS_LanStats_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
+static void     LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 
 static void*    LCS_PortThread( void* arg /*PLCSPORT pLCSPORT */ );
 static void*    LCS_AttnThread( void* arg /*PLCSBLK pLCSBLK */ );
@@ -147,7 +148,6 @@ static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK,
         else if ( (ethtyp) == ETH_TYPE_ARP  ) STRLCPY( (pkttyp), "ARP"     ); \
         else if ( (ethtyp) == ETH_TYPE_RARP ) STRLCPY( (pkttyp), "RARP"    ); \
         else if ( (ethtyp) == ETH_TYPE_SNA  ) STRLCPY( (pkttyp), "SNA"     ); \
-        else if ( (ethtyp) == ETH_TYPE_0003 ) STRLCPY( (pkttyp), "!!SNA!!" ); \
         else                                  STRLCPY( (pkttyp), "unknown" ); \
     }                                                                         \
     while (0)
@@ -1459,7 +1459,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                         MSGBUF( buf, "other (0x%2.2X)", pCmdFrame->bCmdCode );
                         WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, buf );
                     }
-                    LCS_DefaultCmdProc( pLCSDEV, pCmdFrame, iLength );
+                    LCS_DefaultCmd_SNA( pLCSDEV, pCmdFrame, iLength );
                     break;
 
                 } // end switch (LCS Command Frame cmd code)
@@ -1589,18 +1589,14 @@ static void  LCS_Startup( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     {
         VERIFY( TUNTAP_SetIPAddr( pLCSPORT->szNetIfName, "0.0.0.0" ) == 0 );
         VERIFY( TUNTAP_SetMTU   ( pLCSPORT->szNetIfName,  "1500"   ) == 0 );
-    }
-
 #ifdef OPTION_TUNTAP_SETMACADDR
-    if (!pLCSPORT->fPreconfigured)
-    {
         if (pLCSPORT->fLocalMAC)
         {
             VERIFY( TUNTAP_SetMACAddr( pLCSPORT->szNetIfName,
                                        pLCSPORT->szMACAddress ) == 0 );
         }
-    }
 #endif // OPTION_TUNTAP_SETMACADDR
+    }
 
     ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTRTFRM, iReplyLen );
 
@@ -2191,7 +2187,9 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
 
     INIT_REPLY_FRAME( pLCSSTRTFRM, iReplyLen, pCmdFrame, iCmdLen );
 
-    pLCSSTRTFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+    pLCSSTRTFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
+    pLCSSTRTFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
+    pLCSSTRTFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTRTFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
     STORE_HW( pLCSSTRTFRM->hwBufferSize, pLCSDEV->iMaxFrameBufferSize );
     STORE_FW( pLCSSTRTFRM->fwUnknown, 0x00000800 );  /* 0x0800 to 0xFFFF */
@@ -2226,10 +2224,19 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
             // This lets the packets start flowing...
 
             if (!pLCSPORT->fPreconfigured)
+            {
                 VERIFY( TUNTAP_SetFlags( pLCSPORT->szNetIfName, nIFFlags ) == 0 );
+                VERIFY( TUNTAP_SetMTU( pLCSPORT->szNetIfName,  "1500"   ) == 0 );
+#ifdef OPTION_TUNTAP_SETMACADDR
+                if (pLCSPORT->fLocalMAC)
+                {
+                    VERIFY( TUNTAP_SetMACAddr( pLCSPORT->szNetIfName,
+                                               pLCSPORT->szMACAddress ) == 0 );
+                }
+#endif // OPTION_TUNTAP_SETMACADDR
+            }
 
             fStartPending = 1;
-
         }
     }
     PTT_DEBUG(         "REL  PortDataLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
@@ -2245,6 +2252,9 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
 
     if (fStartPending)
         UpdatePortStarted( TRUE, pDEVBLK, pLCSPORT );
+
+    pLCSDEV->fDevStarted = 1;
+
 }
 
 // ====================================================================
@@ -2265,7 +2275,10 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
 
     INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
 
+    pLCSSTDFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
     pLCSSTDFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+//  pLCSSTDFRM->bLCSCmdHdr.bLanType = LCS_FRMTYP_SNA;
+    pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
 
     // Serialize access to eliminate ioctl errors
     PTT_DEBUG(        "GET  PortDataLock ", 000, pDEVBLK->devnum, pLCSPORT->bPort );
@@ -2291,6 +2304,8 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
     // to our frame buffer (so LCS_Read can return it to the guest).
 
     ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen );
+
+    pLCSDEV->fDevStarted = 0;
 }
 
 // ====================================================================
@@ -2392,8 +2407,11 @@ static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     /* unless the TAP mechanism is designed as such          */
     /* cf : hostopts.h for an explanation                    */
     iReplyLen = sizeof(Reply);
+    pLCSLSSFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
     pLCSLSSFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
     STORE_HW( pLCSLSSFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
+//  pLCSLSSFRM->bLCSCmdHdr.bLanType = LCS_FRMTYP_SNA;
+    pLCSLSSFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
     pLCSLSSFRM->bUnknown1 = 0x01;  /* Number of MAC's? */
     pLCSLSSFRM->bUnknown2 = 0x04;  /* SAP? Probably not. 0x04 works, 0x08 doesn't. */
     pLCSLSSFRM->bUnknown3 = 0x00;  /* This byte is kept by VTAM */
@@ -2404,6 +2422,26 @@ static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
 #endif
 
     ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSLSSFRM, iReplyLen );
+}
+
+// ====================================================================
+//                       LCS_DefaultCmd_SNA
+// ====================================================================
+
+static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
+{
+    LCSSTDFRM   Reply;
+    int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
+    PLCSSTDFRM  pLCSSTDFRM = (PLCSSTDFRM)&Reply;
+
+    INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
+
+    pLCSSTDFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
+    pLCSSTDFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
+//  pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_SNA;
+    pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
+
+    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen );
 }
 
 // ====================================================================
@@ -2715,111 +2753,134 @@ static void*  LCS_PortThread( void* arg)
             // Only process devices that are on this port
             if (pLCSDev->bPort == pLCSPORT->bPort)
             {
-                if (hwEthernetType == ETH_TYPE_IP)
+                // To quote Wikipedia "The EtherType field is two octets long
+                // and it can be used for two different purposes. Values of 1500
+                // and below mean that it is used to indicate the size of the
+                // payload in octets, while values of 1536 and above indicate
+                // that it is used as an EtherType, to indicate which protocol
+                // is encapsulated in the payload of the frame."
+                if (hwEthernetType >= 1536)
                 {
-                    pIPFrame   = (PIP4FRM)pEthFrame->bData;
-                    lIPAddress = pIPFrame->lDstIP;  // (network byte order)
-
-                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                    // EtherType indicates which protocol is encapsulated in the payload.
+                    if (hwEthernetType == ETH_TYPE_IP)
                     {
-                        union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
-                        char  str[40];
+                        pIPFrame   = (PIP4FRM)pEthFrame->bData;
+                        lIPAddress = pIPFrame->lDstIP;  // (network byte order)
 
-                        c.i = ntohl(lIPAddress);
-                        MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
+                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                        {
+                            union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
+                            char  str[40];
 
-                        // "CTC: lcs device port %2.2X: IPv4 frame received for %s"
-                        WRMSG( HHC00946, "D", pLCSPORT->bPort, str );
-                        bReported = 1;
+                            c.i = ntohl(lIPAddress);
+                            MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
+
+                            // "CTC: lcs device port %2.2X: IPv4 frame received for %s"
+                            WRMSG( HHC00946, "D", pLCSPORT->bPort, str );
+                            bReported = 1;
+                        }
+
+                        // If this is an exact match use it
+                        // otherwise look for primary and secondary
+                        // default devices
+                        if (pLCSDev->lIPAddress == lIPAddress)
+                        {
+                            pMatchingLCSDEV = pLCSDev;
+                            break;
+                        }
+                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                            pPrimaryLCSDEV = pLCSDev;
+                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                            pSecondaryLCSDEV = pLCSDev;
                     }
-
-                    // If this is an exact match use it
-                    // otherwise look for primary and secondary
-                    // default devices
-                    if (pLCSDev->lIPAddress == lIPAddress)
+                    else if (hwEthernetType == ETH_TYPE_ARP)
                     {
-                        pMatchingLCSDEV = pLCSDev;
-                        break;
+                        pARPFrame  = (PARPFRM)pEthFrame->bData;
+                        lIPAddress = pARPFrame->lTargIPAddr; // (network byte order)
+
+                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                        {
+                            union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
+                            char  str[40];
+
+                            c.i = ntohl(lIPAddress);
+                            MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
+
+                            // "CTC: lcs device port %2.2X: ARP frame received for %s"
+                            WRMSG( HHC00947, "D", pLCSPORT->bPort, str );
+                            bReported = 1;
+                        }
+
+                        // If this is an exact match use it
+                        // otherwise look for primary and secondary
+                        // default devices
+                        if (pLCSDev->lIPAddress == lIPAddress)
+                        {
+                            pMatchingLCSDEV = pLCSDev;
+                            break;
+                        }
+                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                            pPrimaryLCSDEV = pLCSDev;
+                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                            pSecondaryLCSDEV = pLCSDev;
                     }
-                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                        pPrimaryLCSDEV = pLCSDev;
-                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                        pSecondaryLCSDEV = pLCSDev;
-                }
-                else if (hwEthernetType == ETH_TYPE_ARP)
-                {
-                    pARPFrame  = (PARPFRM)pEthFrame->bData;
-                    lIPAddress = pARPFrame->lTargIPAddr; // (network byte order)
-
-                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                    else if (hwEthernetType == ETH_TYPE_RARP)
                     {
-                        union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
-                        char  str[40];
+                        pARPFrame  = (PARPFRM)pEthFrame->bData;
+                        pMAC = pARPFrame->bTargEthAddr;
 
-                        c.i = ntohl(lIPAddress);
-                        MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
-
-                        // "CTC: lcs device port %2.2X: ARP frame received for %s"
-                        WRMSG( HHC00947, "D", pLCSPORT->bPort, str );
-                        bReported = 1;
-                    }
-
-                    // If this is an exact match use it
-                    // otherwise look for primary and secondary
-                    // default devices
-                    if (pLCSDev->lIPAddress == lIPAddress)
-                    {
-                        pMatchingLCSDEV = pLCSDev;
-                        break;
-                    }
-                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                        pPrimaryLCSDEV = pLCSDev;
-                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                        pSecondaryLCSDEV = pLCSDev;
-                }
-                else if (hwEthernetType == ETH_TYPE_RARP)
-                {
-                    pARPFrame  = (PARPFRM)pEthFrame->bData;
-                    pMAC = pARPFrame->bTargEthAddr;
-
-                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
-                    {
-                        WRMSG
-                        (
+                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                        {
                             // "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                            WRMSG( HHC00948, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
+                            bReported = 1;
+                        }
 
-                            HHC00948, "D"
-
-                            ,pLCSPORT->bPort
-                            ,*(pMAC+0)
-                            ,*(pMAC+1)
-                            ,*(pMAC+2)
-                            ,*(pMAC+3)
-                            ,*(pMAC+4)
-                            ,*(pMAC+5)
-                        );
-                        bReported = 1;
+                        // If this is an exact match use it
+                        // otherwise look for primary and secondary
+                        // default devices
+                        if (memcmp( pMAC, pLCSPORT->MAC_Address, IFHWADDRLEN ) == 0)
+                        {
+                            pMatchingLCSDEV = pLCSDev;
+                            break;
+                        }
+                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                            pPrimaryLCSDEV = pLCSDev;
+                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                            pSecondaryLCSDEV = pLCSDev;
                     }
-
-                    // If this is an exact match use it
-                    // otherwise look for primary and secondary
-                    // default devices
-                    if (memcmp( pMAC, pLCSPORT->MAC_Address, IFHWADDRLEN ) == 0)
+                    else if (hwEthernetType == ETH_TYPE_SNA)
                     {
-                        pMatchingLCSDEV = pLCSDev;
-                        break;
+                        pMAC = pEthFrame->bDestMAC;
+
+                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                        {
+                            // "CTC: lcs device port %2.2X: SNA frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                            WRMSG( HHC00949, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
+                            bReported = 1;
+                        }
+
+                        if (pLCSDev->bMode == LCSDEV_MODE_SNA)
+                        {
+                            pMatchingLCSDEV = pLCSDev;
+                            break;
+                        }
+                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                            pPrimaryLCSDEV = pLCSDev;
+                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                            pSecondaryLCSDEV = pLCSDev;
                     }
-                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                        pPrimaryLCSDEV = pLCSDev;
-                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                        pSecondaryLCSDEV = pLCSDev;
                 }
-                else if (hwEthernetType == ETH_TYPE_SNA || hwEthernetType == ETH_TYPE_0003)  /* FixMe! Remove 0003? */
+                else  // i.e hwEthernetType < 1536
                 {
+                    // EtherType indicates the size of the payload.
+                    // We will assume this is an 802.3 frame containing SNA traffic.
+                    pMAC = pEthFrame->bDestMAC;
+
                     if (pLCSPORT->pLCSBLK->fDebug && !bReported)
                     {
-                        // "CTC: lcs device port %2.2X: SNA frame received"
-                        WRMSG( HHC00949, "D", pLCSPORT->bPort );
+                        // "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                        WRMSG( HHC00948, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
                         bReported = 1;
                     }
 
@@ -2828,6 +2889,10 @@ static void*  LCS_PortThread( void* arg)
                         pMatchingLCSDEV = pLCSDev;
                         break;
                     }
+                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                        pPrimaryLCSDEV = pLCSDev;
+                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                        pSecondaryLCSDEV = pLCSDev;
                 }
             }
         }

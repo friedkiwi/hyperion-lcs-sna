@@ -175,11 +175,9 @@ typedef struct _ETHFRM ETHFRM, *PETHFRM;
 #define  ETH_TYPE_IP        0x0800
 #define  ETH_TYPE_ARP       0x0806
 #define  ETH_TYPE_RARP      0x8035
-#define  ETH_TYPE_SNA       0x80D5
+#define  ETH_TYPE_SNA       0x80D5     // IBM SNA Service over Ethernet
 #define  ETH_TYPE_IPV6      0x86dd
 #define  ETH_TYPE_VLANTAG   0x8100
-
-#define  ETH_TYPE_0003      0x0003     /* SNA !!! */
 
 
 // --------------------------------------------------------------------
@@ -623,10 +621,10 @@ struct _LCSSTDFRM
 {
     LCSCMDHDR   bLCSCmdHdr;             // LCS Command Frame header
 
-    HWORD       hwParameterCount;
-    BYTE        bOperatorFlags[3];
-    BYTE        _reserved[3];
-    BYTE        bData[FLEXIBLE_ARRAY];
+    HWORD       hwParameterCount;       //  +C
+    BYTE        bOperatorFlags[3];      //  +E
+    BYTE        _reserved[3];           // +11
+    BYTE        bData[FLEXIBLE_ARRAY];  // +14
 } ATTRIBUTE_PACKED;
 
 
@@ -638,10 +636,10 @@ struct _LCSSTRTFRM
 {
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
-    HWORD       hwBufferSize;           //   C
-    BYTE        _unused[6];             //   E
-    FWORD       fwUnknown;              //  14
-} ATTRIBUTE_PACKED;                     //  18
+    HWORD       hwBufferSize;           //  +C
+    BYTE        _unused[6];             //  +E
+    FWORD       fwUnknown;              // +14
+} ATTRIBUTE_PACKED;                     // +18
 
 
 // --------------------------------------------------------------------
