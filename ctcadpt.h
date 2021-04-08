@@ -179,6 +179,8 @@ typedef struct _ETHFRM ETHFRM, *PETHFRM;
 #define  ETH_TYPE_IPV6      0x86dd
 #define  ETH_TYPE_VLANTAG   0x8100
 
+#define  ETH_TYPE_0003      0x0003     /* SNA !!! */
+
 
 // --------------------------------------------------------------------
 // IP Version 4 Frame Header (Type 0x0800)  (network byte order)
