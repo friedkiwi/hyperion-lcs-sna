@@ -162,15 +162,23 @@ extern void     packet_trace( BYTE *addr, int len, BYTE dir );
 
 struct _ETHFRM
 {
-    MAC         bDestMAC;                // 0x00
-    MAC         bSrcMAC;                 // 0x06
-    HWORD       hwEthernetType;          // 0x0C  (see below #defines)
-    BYTE        bData[FLEXIBLE_ARRAY];   // 0x0E
+    MAC         bDestMAC;                //  +0
+    MAC         bSrcMAC;                 //  +6
+    HWORD       hwEthernetType;          //  +C  (see below #defines)
+    BYTE        bData[FLEXIBLE_ARRAY];   //  +E
 } ATTRIBUTE_PACKED;
 
 
 typedef struct _ETHFRM ETHFRM, *PETHFRM;
 
+
+// To quote Wikipedia "The EtherType field is two octets long
+// and it can be used for two different purposes. Values of 1500
+// and below mean that it is used to indicate the size of the
+// payload in octets, while values of 1536 and above indicate
+// that it is used as an EtherType, to indicate which protocol
+// is encapsulated in the payload of the frame."
+#define  ETH_TYPE           0x0600     // 0x0600 = 1536
 
 #define  ETH_TYPE_IP        0x0800
 #define  ETH_TYPE_ARP       0x0806
@@ -186,17 +194,17 @@ typedef struct _ETHFRM ETHFRM, *PETHFRM;
 
 struct  _IP4FRM
 {
-    BYTE        bVersIHL;                // 0x00 Vers:4, IHL:4
-    BYTE        bTOS;                    // 0x01
-    HWORD       hwTotalLength;           // 0x02
-    HWORD       hwIdentification;        // 0x04
-    U16         bFlagsFragOffset;        // 0x06 Flags:3, FragOffset:13
-    BYTE        bTTL;                    // 0x08
-    BYTE        bProtocol;               // 0x09
-    HWORD       hwChecksum;              // 0x0A
-    U32         lSrcIP;                  // 0x0C
-    U32         lDstIP;                  // 0x10
-    BYTE        bData[FLEXIBLE_ARRAY];   // 0x14
+    BYTE        bVersIHL;                //  +0  Vers:4, IHL:4
+    BYTE        bTOS;                    //  +1
+    HWORD       hwTotalLength;           //  +2
+    HWORD       hwIdentification;        //  +4
+    U16         bFlagsFragOffset;        //  +6  Flags:3, FragOffset:13
+    BYTE        bTTL;                    //  +8
+    BYTE        bProtocol;               //  +9
+    HWORD       hwChecksum;              //  +A
+    U32         lSrcIP;                  //  +C
+    U32         lDstIP;                  // +10
+    BYTE        bData[FLEXIBLE_ARRAY];   // +14
 } ATTRIBUTE_PACKED;
 
 
@@ -205,19 +213,20 @@ typedef struct _IP4FRM IP4FRM, *PIP4FRM;
 
 // --------------------------------------------------------------------
 // Address Resolution Protocol Frame (Type 0x0806) (network byte order)
+// Reverse Address Resolution Protocol Frame (Type 0x8035) (network bo)
 // --------------------------------------------------------------------
 
 struct  _ARPFRM
 {
-    HWORD       hwHardwareType;          // 0x00
-    HWORD       hwProtocolType;          // 0x02
-    BYTE        bHardwareSize;           // 0x04
-    BYTE        bProtocolSize;           // 0x05
-    HWORD       hwOperation;             // 0x06
-    MAC         bSendEthAddr;            // 0x08
-    U32         lSendIPAddr;             // 0x12
-    MAC         bTargEthAddr;            // 0x16
-    U32         lTargIPAddr;             // 0x1C
+    HWORD       hwHardwareType;          //  +0
+    HWORD       hwProtocolType;          //  +2
+    BYTE        bHardwareSize;           //  +4
+    BYTE        bProtocolSize;           //  +5
+    HWORD       hwOperation;             //  +6
+    MAC         bSendEthAddr;            //  +8
+    U32         lSendIPAddr;             // +12
+    MAC         bTargEthAddr;            // +16
+    U32         lTargIPAddr;             // +1C
 } ATTRIBUTE_PACKED;
 
 
@@ -231,18 +240,18 @@ typedef struct _ARPFRM ARPFRM, *PARPFRM;
 
 
 // --------------------------------------------------------------------
-// IP Version 6 Frame Header (Type 0x86dd)  (network byte order)
+// IP Version 6 Frame Header (Type 0x86DD)  (network byte order)
 // --------------------------------------------------------------------
 
 struct  _IP6FRM
 {
-    BYTE      bVersTCFlow[4];            // 0x00 Vers:4, TC:8 FlowID:20
-    BYTE      bPayloadLength[2];         // 0x04
-    BYTE      bNextHeader;               // 0x06 (same as IPv4 Protocol)
-    BYTE      bHopLimit;                 // 0x07
-    BYTE      bSrcAddr[16];              // 0x08
-    BYTE      bDstAddr[16];              // 0x18
-    BYTE      bPayload[FLEXIBLE_ARRAY];  // The payload
+    BYTE      bVersTCFlow[4];            //  +0  Vers:4, TC:8 FlowID:20
+    BYTE      bPayloadLength[2];         //  +4
+    BYTE      bNextHeader;               //  +6  (same as IPv4 Protocol)
+    BYTE      bHopLimit;                 //  +7
+    BYTE      bSrcAddr[16];              //  +8
+    BYTE      bDstAddr[16];              // +18
+    BYTE      bPayload[FLEXIBLE_ARRAY];  // +28  The payload
 } ATTRIBUTE_PACKED;
 
 typedef struct _IP6FRM IP6FRM, *PIP6FRM;
@@ -390,6 +399,12 @@ struct _CTCISEG                         // CTCI Segment Header
 
 struct  _LCSDEV
 {
+    PLCSDEV     pNext;                  // -> Next device LSCDEV
+
+    PLCSBLK     pLCSBLK;                // -> LCSBLK
+    DEVBLK*     pDEVBLK[2];             // 0 - Read subchannel
+                                        // 1 - Write cubchannel
+
     U16         sAddr;                  // Device Base Address
     BYTE        bMode;                  // (see below #defines)
     BYTE        bPort;                  // Relative Adapter No.
@@ -398,14 +413,6 @@ struct  _LCSDEV
 
     U32         lIPAddress;             // IP Address (binary),
                                         // (network byte order)
-
-    PLCSBLK     pLCSBLK;                // -> LCSBLK
-    DEVBLK*     pDEVBLK[2];             // 0 - Read subchannel
-                                        // 1 - Write cubchannel
-
-    U16         iMaxFrameBufferSize;    // Device Buffer Size
-    BYTE        bFrameBuffer[CTC_DEF_FRAME_BUFFER_SIZE]; // (this really SHOULD be dynamically allocated!)
-    U16         iFrameOffset;           // Curr Offset into Buffer
 
     LOCK        DevDataLock;            // Data LOCK
     LOCK        DevEventLock;           // Condition LOCK
@@ -418,8 +425,11 @@ struct  _LCSDEV
     u_int       fDataPending:1;         // Data is Pending
     u_int       fReadWaiting:1;         // LCS_Read waiting
     u_int       fHaltOrClear:1;         // HSCH or CSCH issued
+    u_int       fPendingBaffle:1;       // Pending has Baffle structure
 
-    PLCSDEV     pNext;                  // Next device
+    U16         iFrameOffset;           // Curr Offset into Buffer
+    U16         iMaxFrameBufferSize;    // Device Buffer Size
+    BYTE        bFrameBuffer[CTC_DEF_FRAME_BUFFER_SIZE]; // (this really SHOULD be dynamically allocated!)
 };
 
 
@@ -572,6 +582,7 @@ struct _LCSHDR      // *ALL* LCS Frames start with the following header
 #define  LCS_FRMTYP_FDDI    0x07        // FDDI
 #define  LCS_FRMTYP_AUTO    0xFF        // auto-detect
 
+#define  LCS_FRMTYP_SNA     0x04        // SNA ?
 
 // --------------------------------------------------------------------
 // LCS Command Frame Header                     (network byte order)
@@ -682,12 +693,15 @@ struct  _LCSLSSFRM
 {
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
-    BYTE        bUnknown1;              //  +C
+    BYTE        bUnknown1;              //  +C  The following bytes are
+                                        //      probably a structure, and
+                                        //      this byte contains a count
+                                        //      of the structures.
     BYTE        bUnknown2;              //  +D
     BYTE        bUnknown3;              //  +E
     BYTE        _unused1[3];            //  +F
-    BYTE        bUnknown7;              // +12
-    MAC         MAC_Address;            // +13  MAC Address of Adapter
+    BYTE        bUnknown7;              // +12  Probably length of MAC Address.
+    MAC         MAC_Address;            // +13  MAC Address.
     BYTE        _unused2[1];            // +19
 } ATTRIBUTE_PACKED;                     // +1A
 
