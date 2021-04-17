@@ -2285,8 +2285,8 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     pLCSSTRTFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
     pLCSSTRTFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTRTFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
-    STORE_HW( pLCSSTRTFRM->hwBufferSize, pLCSDEV->iMaxFrameBufferSize );
-    STORE_FW( pLCSSTRTFRM->fwUnknown, 0x00000800 );  /* 0x0800 to 0xFFFF */
+    STORE_HW( pLCSSTRTFRM->hwBufferSize, pLCSDEV->iMaxFrameBufferSize );  /* >= 0x0200, == 0x02FF */
+    STORE_FW( pLCSSTRTFRM->fwReadLength, pLCSDEV->iMaxFrameBufferSize );  /* Read CCW length (0x0800 to 0xFFFF) */
     iReplyLen = sizeof(Reply);
 
     // Serialize access to eliminate ioctl errors

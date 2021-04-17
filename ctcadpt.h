@@ -647,9 +647,11 @@ struct _LCSSTRTFRM
 {
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
-    HWORD       hwBufferSize;           //  +C
+    HWORD       hwBufferSize;           //  +C  For IP this is a buffer
+                                        //      size, for SNA it seems
+                                        //      to be something unknown.
     BYTE        _unused[6];             //  +E
-    FWORD       fwUnknown;              // +14
+    FWORD       fwReadLength;           // +14  Read CCW length
 } ATTRIBUTE_PACKED;                     // +18
 
 
