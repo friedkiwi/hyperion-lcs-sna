@@ -648,10 +648,13 @@ struct _LCSSTRTFRM
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
     HWORD       hwBufferSize;           //  +C  For IP this is a buffer
-                                        //      size, for SNA it seems
-                                        //      to be something unknown.
+                                        //      size that comes from the
+                                        //      stack. For SNA it is
+                                        //      something unknown that
+                                        //      goes to VTAM (which checks
+                                        //      for >= 0x0200, or == 0x02FF).
     BYTE        _unused[6];             //  +E
-    FWORD       fwReadLength;           // +14  Read CCW length
+    FWORD       fwReadLength;           // +14  Length for Read CCW (0x0800 to 0xFFFF).
 } ATTRIBUTE_PACKED;                     // +18
 
 

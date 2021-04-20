@@ -100,28 +100,27 @@ static void     LCS_AddMulticast  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int i
 static void     LCS_DelMulticast  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 static void     LCS_DefaultCmdProc( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 
-static void     LCS_StartLan_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres );
-static void     LCS_StopLan_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres );
-static void     LCS_LanStats_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres );
-static void     LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres );
-static void     LCS_Baffle_SNA    ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres );
+static void     LCS_StartLan_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen );
+static void     LCS_StopLan_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen );
+static void     LCS_LanStats_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen );
+static void     LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen );
+static void     LCS_Baffle_SNA    ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen );
 
-static void*    LCS_PortThread( void* arg /*PLCSPORT pLCSPORT */ );
-static void*    LCS_AttnThread( void* arg /*PLCSBLK pLCSBLK */ );
+static void*    LCS_PortThread( void* arg /* PLCSPORT pLCSPORT */ );
+static void*    LCS_AttnThread( void* arg /* PLCSBLK pLCSBLK */ );
 
-static void     LCS_EnqueueEthFrame     ( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize );
-static int      LCS_DoEnqueueEthFrame   ( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize );
+static void     LCS_EnqueueEthFrame     ( PLCSPORT pLCSPORT, PLCSDEV pLCSDEV, BYTE* pData, size_t iSize );
+static int      LCS_DoEnqueueEthFrame   ( PLCSPORT pLCSPORT, PLCSDEV pLCSDEV, BYTE* pData, size_t iSize );
 
-static void     LCS_EnqueueReplyFrame   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres );
-static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres );
+static void     LCS_EnqueueReplyFrame   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize );
+static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize );
 
-//  static void     LCS_EnqueueBaffleFrame   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres );
-//  static int      LCS_DoEnqueueBaffleFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres );
+static void     LCS_EnqueueReplyFrame_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen );
+static int      LCS_DoEnqueueReplyFrame_SNA ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen );
 
 static int      BuildOAT( char* pszOATName, PLCSBLK pLCSBLK );
 static char*    ReadOAT( char* pszOATName, FILE* fp, char* pszBuff );
-static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK,
-                           int argc, char** argv );
+static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK, int argc, char** argv );
 
 // ====================================================================
 //                       Helper macros
@@ -144,9 +143,6 @@ static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK,
         STORE_HW( (pReply)->bLCSCmdHdr.hwReturnCode, 0x0000 );       \
     }                                                                \
     while (0)
-
-#define ENQUEUE_REPLY_FRAME( pLCSDEV, pReply, iReplyLen, bBafflePres )                   \
-    LCS_EnqueueReplyFrame( (pLCSDEV), (PLCSCMDHDR) (pReply), (iReplyLen), (bBafflePres) )
 
 #define SET_CPKTTYPE( ethtyp, pkttyp )                                              \
     do                                                                              \
@@ -1085,15 +1081,23 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     char        buf[32];
     U16         hwEthernetType;
     U16         hwBaffleLen;
-    BYTE        bBafflePres;
     BYTE*       pIOBufStart = NULL;
+    int         iTraceLen;
 
-    // Display the data written by the guest, if debug is active.
+    // Display up to 256-bytes of the data coming from the guest, if debug is active
     if (pLCSBLK->fDebug)
     {
         // "%1d:%04X %s: Accept data of size %d bytes from guest"
         WRMSG(HHC00981, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum,  pDEVBLK->typname, (int)sCount );
-        net_data_trace( pDEVBLK, pIOBuf, (int)sCount, '<', 'D', "data", 0 );
+        iTraceLen = sCount;
+        if (iTraceLen > 256)
+        {
+            iTraceLen = 256;
+            // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+            WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                 iTraceLen, (int)(sCount - iTraceLen) );
+        }
+        net_data_trace( pDEVBLK, pIOBuf, iTraceLen, '<', 'D', "data", 0 );
     }
 
     // Process each frame in the buffer...
@@ -1368,17 +1372,16 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     //   HHC00979D LCS: data: +0010< 00000000 00000000 00000000 0000      ..............   ..............
     //
     // Are the first 8-bytes a structure, with the first 2-bytes of the
-    // containing the length of whatever follows the structure?
+    // containing the length of whatever follows the structure? Yes!
     // Are the bytes following the structure an LCSHDR with, in the first
     // instance, some kind of SNA data, and, in the second instance, an
-    // SNA Stop LAN command?
-    // Are the 0x0016 and 0x0014 just coincidence?
+    // SNA Stop LAN command? Yes!
+    // Are the 0x0016 and 0x0014 just coincidence? No!
     // We need a trace of real hardware!
     //
     // When the 8-byte structure is in a reply to VTAM the 8-bytes are
     // copied to an XCNCB, and various bits in the third byte are tested.
     //
-
 
     else  //  (pLCSDEV->bMode == LCSDEV_MODE_SNA)
     {
@@ -1387,16 +1390,14 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
         iLength = sCount - SIZEOF_BAFFLE;
 
         if ( hwBaffleLen == iLength &&                   // First two bytes contain length?, and
-             pIOBuf[2] == 0x00 &&                        // third byte is nulls?, and
-             memcmp( &pIOBuf[2], &pIOBuf[3], 5 ) == 0 )  // third to eighth byte are all nulls?
+             pIOBuf[2] == 0x00 &&                        // third byte is nulls?, and             /* FixMe! These two ands will   */
+             memcmp( &pIOBuf[2], &pIOBuf[3], 5 ) == 0 )  // third to eighth byte are all nulls?   /* probably have to be removed! */
         {
-            bBafflePres = TRUE;
             pIOBufStart = &pIOBuf[SIZEOF_BAFFLE];
         }
         else
         {
             hwBaffleLen = 0;
-            bBafflePres = FALSE;
             pIOBufStart = pIOBuf;
         }
 
@@ -1502,7 +1503,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
       }                                                                          /* FixMe! Remove! */
                 }
 
-                LCS_Baffle_SNA( pLCSDEV, pCmdFrame, iLength, bBafflePres );
+                LCS_Baffle_SNA( pLCSDEV, pCmdFrame, iLength, hwBaffleLen );
 
                 break;
 
@@ -1528,21 +1529,21 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                     PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
                     if (pLCSBLK->fDebug)
                         WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
-                    LCS_StartLan_SNA( pLCSDEV, pCmdFrame, iLength, bBafflePres );
+                    LCS_StartLan_SNA( pLCSDEV, pCmdFrame, iLength, hwBaffleLen );
                     break;
 
                 case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
                     PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
                     if (pLCSBLK->fDebug)
                         WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
-                    LCS_StopLan_SNA( pLCSDEV, pCmdFrame, iLength, bBafflePres );
+                    LCS_StopLan_SNA( pLCSDEV, pCmdFrame, iLength, hwBaffleLen );
                     break;
 
                 case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
                     PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
                     if (pLCSBLK->fDebug)
                         WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
-                    LCS_LanStats_SNA( pLCSDEV, pCmdFrame, iLength, bBafflePres );
+                    LCS_LanStats_SNA( pLCSDEV, pCmdFrame, iLength, hwBaffleLen );
                     break;
 
                 default:
@@ -1553,7 +1554,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                         MSGBUF( buf, "other (0x%2.2X)", pCmdFrame->bCmdCode );
                         WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, buf );
                     }
-                    LCS_DefaultCmd_SNA( pLCSDEV, pCmdFrame, iLength, bBafflePres );
+                    LCS_DefaultCmd_SNA( pLCSDEV, pCmdFrame, iLength, hwBaffleLen );
                     break;
 
                 } // end switch (LCS Command Frame cmd code)
@@ -1692,7 +1693,7 @@ static void  LCS_Startup( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 #endif // OPTION_TUNTAP_SETMACADDR
     }
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTRTFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTRTFRM, iReplyLen );
 
     pLCSDEV->fDevStarted = 1;
 }
@@ -1713,7 +1714,7 @@ static void  LCS_Shutdown( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen );
 
     pLCSDEV->fDevStarted = 0;
 }
@@ -1861,7 +1862,7 @@ static void  LCS_StartLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     // the reply to its cmd BEFORE it sees any Ethernet packets that might
     // result from its StartLAN cmd.
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTRTFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTRTFRM, iReplyLen );
 
     if (fStartPending)
         UpdatePortStarted( TRUE, pDEVBLK, pLCSPORT );
@@ -1947,7 +1948,7 @@ static void  LCS_StopLan( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     // frame buffer we can now finally enqueue our reply frame
     // to our frame buffer (so LCS_Read can return it to the guest).
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen );
 }
 
 // ====================================================================
@@ -1970,7 +1971,7 @@ static void  LCS_QueryIPAssists( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
     STORE_HW( pLCSQIPFRM->hwIPAssistsEnabled,   pLCSPORT->sIPAssistsEnabled   );
     STORE_HW( pLCSQIPFRM->hwIPVersion,          0x0004 ); // (IPv4 only)
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSQIPFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSQIPFRM, iReplyLen );
 }
 
 // ====================================================================
@@ -2079,7 +2080,7 @@ static void  LCS_LanStats( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 #endif
     // FIXME: Really should read /proc/net/dev to retrieve actual stats
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSLSTFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSLSTFRM, iReplyLen );
 }
 
 // ====================================================================
@@ -2221,7 +2222,7 @@ static  void  LCS_DoMulticast( int ioctlcode, PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFr
 
     // Queue response back to caller
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSIPMFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSIPMFRM, iReplyLen );
 }
 
 // ====================================================================
@@ -2257,14 +2258,14 @@ static void  LCS_DefaultCmdProc( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
     pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen, 0 );
+    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen );
 }
 
 // ====================================================================
 //                         LCS_StartLan_SNA
 // ====================================================================
 
-static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres )
+static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen )
 {
     LCSSTRTFRM  Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
@@ -2286,7 +2287,7 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     pLCSSTRTFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTRTFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
     STORE_HW( pLCSSTRTFRM->hwBufferSize, pLCSDEV->iMaxFrameBufferSize );  /* >= 0x0200, == 0x02FF */
-    STORE_FW( pLCSSTRTFRM->fwReadLength, pLCSDEV->iMaxFrameBufferSize );  /* Read CCW length (0x0800 to 0xFFFF) */
+    STORE_FW( pLCSSTRTFRM->fwReadLength, pLCSDEV->iMaxFrameBufferSize );  /* Length for Read CCW (0x0800 to 0xFFFF) */
     iReplyLen = sizeof(Reply);
 
     // Serialize access to eliminate ioctl errors
@@ -2342,7 +2343,7 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     // the reply to its cmd BEFORE it sees any Ethernet packets that might
     // result from its StartLAN cmd.
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTRTFRM, iReplyLen, bBafflePres );
+    LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pLCSSTRTFRM, iReplyLen, hwBaffleLen );
 
     if (fStartPending)
         UpdatePortStarted( TRUE, pDEVBLK, pLCSPORT );
@@ -2355,7 +2356,7 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
 //                         LCS_StopLan_SNA
 // ====================================================================
 
-static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres )
+static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen )
 {
     LCSSTDFRM   Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
@@ -2370,8 +2371,8 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
     INIT_REPLY_FRAME( pLCSSTDFRM, iReplyLen, pCmdFrame, iCmdLen );
 
     pLCSSTDFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
-    pLCSSTDFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
-//  pLCSSTDFRM->bLCSCmdHdr.bLanType = LCS_FRMTYP_SNA;
+    pLCSSTDFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
+//  pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
 
     // Serialize access to eliminate ioctl errors
@@ -2397,7 +2398,7 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
     // frame buffer we can now finally enqueue our reply frame
     // to our frame buffer (so LCS_Read can return it to the guest).
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen, bBafflePres );
+    LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen, hwBaffleLen );
 
     pLCSDEV->fDevStarted = 0;
 }
@@ -2406,7 +2407,7 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
 //                         LCS_LanStats_SNA
 // ====================================================================
 
-static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres )
+static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen )
 {
 
     LCSLSSFRM  Reply;
@@ -2502,27 +2503,27 @@ static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     /* cf : hostopts.h for an explanation                    */
     iReplyLen = sizeof(Reply);
     pLCSLSSFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
-    pLCSLSSFRM->bLCSCmdHdr.bInitiator = LCS_INITIATOR_SNA;
+    pLCSLSSFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
     STORE_HW( pLCSLSSFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
-//  pLCSLSSFRM->bLCSCmdHdr.bLanType = LCS_FRMTYP_SNA;
+//  pLCSLSSFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSLSSFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
-    pLCSLSSFRM->bUnknown1 = 0x01;  /* Count? */
-    pLCSLSSFRM->bUnknown2 = 0x04;  /* This byte is kept by VTAM. SAP? Probably not. 0x04 works, 0x08 doesn't. */
-    pLCSLSSFRM->bUnknown3 = 0x00;  /* This byte is kept by VTAM. */
-    pLCSLSSFRM->bUnknown7 = 0x06;  /* MAC length? */
+    pLCSLSSFRM->bUnknown1                = 0x01;  /* Count? */
+    pLCSLSSFRM->bUnknown2                = 0x04;  /* This byte is kept by VTAM. SAP? Probably not. 0x04 works, 0x08 doesn't. */
+    pLCSLSSFRM->bUnknown3                = 0x00;  /* This byte is kept by VTAM. */
+    pLCSLSSFRM->bUnknown7                = 0x06;  /* MAC length? */
     memcpy( pLCSLSSFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
 #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
     pLCSLSSFRM->MAC_Address[5]++;
 #endif
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSLSSFRM, iReplyLen, bBafflePres );
+    LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pLCSLSSFRM, iReplyLen, hwBaffleLen );
 }
 
 // ====================================================================
 //                       LCS_DefaultCmd_SNA
 // ====================================================================
 
-static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres )
+static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen )
 {
     LCSSTDFRM   Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
@@ -2532,10 +2533,10 @@ static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
 
     pLCSSTDFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
     pLCSSTDFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
-//  pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_SNA;
+//  pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
 
-    ENQUEUE_REPLY_FRAME( pLCSDEV, pLCSSTDFRM, iReplyLen, bBafflePres );
+    LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen, hwBaffleLen );
 }
 
 // ====================================================================
@@ -2545,7 +2546,7 @@ static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
 // HHC00979D LCS: data: +0000< 00160000 00000000 00140400 000C0C99  ................ ...............r
 // HHC00979D LCS: data: +0010< 0003C000 00000000 01000000 0000      ..............   ..{...........
 
-static void  LCS_Baffle_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, BYTE bBafflePres )
+static void  LCS_Baffle_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen, U16 hwBaffleLen )
 {
 
     char       Reply[128];
@@ -2557,8 +2558,8 @@ static void  LCS_Baffle_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen,
     memcpy( pReply, pCmdFrame, iCmdLen );
     iReplyLen = iCmdLen;
 
-    LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pReply, iReplyLen, bBafflePres );
-//      LCS_EnqueueBaffleFrame( pLCSDEV, (PLCSCMDHDR)pReply, iReplyLen, bBafflePres );
+    LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pReply, 0, hwBaffleLen );
+//  LCS_EnqueueReplyFrame_SNA( pLCSDEV, (PLCSCMDHDR)pReply, iReplyLen, hwBaffleLen );
 }
 
 // ====================================================================
@@ -2571,7 +2572,7 @@ static void  LCS_Baffle_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen,
 //
 // --------------------------------------------------------------------
 
-static void LCS_EnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres )
+static void LCS_EnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize )
 {
     PLCSPORT  pLCSPORT;
     DEVBLK*   pDEVBLK;
@@ -2603,7 +2604,7 @@ static void LCS_EnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iS
     while (1
         &&  pLCSPORT->fd != -1
         && !pLCSPORT->fCloseInProgress
-        && LCS_DoEnqueueReplyFrame( pLCSDEV, pReply, iSize, bBafflePres ) < 0
+        && LCS_DoEnqueueReplyFrame( pLCSDEV, pReply, iSize ) < 0
     )
     {
         if (pLCSDEV->pLCSBLK->fDebug)
@@ -2648,11 +2649,10 @@ static void LCS_EnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iS
 //
 // --------------------------------------------------------------------
 
-static int  LCS_DoEnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres )
+static int  LCS_DoEnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize )
 {
     PLCSCMDHDR  pReplyCmdFrame;
     DEVBLK*     pDEVBLK;
-    BYTE*       pBaffle;
     BYTE        bPort = pLCSDEV->bPort;
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
@@ -2662,25 +2662,16 @@ static int  LCS_DoEnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t 
     PTT_DEBUG(       "GOT  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
     {
         // Ensure we dont overflow the buffer
- /* FixMe! Need to account for bBafflePres here! */
         if ((pLCSDEV->iFrameOffset +            // Current buffer Offset
               iSize +                           // Size of reply frame
               sizeof(pReply->bLCSHdr.hwOffset)) // Size of Frame terminator
             > pLCSDEV->iMaxFrameBufferSize)     // Size of Frame buffer
         {
             PTT_DEBUG( "*DoENQRep ENOBUFS ", 000, pDEVBLK->devnum, bPort );
-            PTT_DEBUG( "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
+            PTT_DEBUG(        "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
             release_lock( &pLCSDEV->DevDataLock );
             errno = ENOBUFS;                    // No buffer space available
             return -1;                          // (-1==failure)
-        }
-
-        if ( !pLCSDEV->iFrameOffset && bBafflePres )
-        {
-            pBaffle = pLCSDEV->bFrameBuffer;
-            memset( pBaffle, 0, SIZEOF_BAFFLE );
-            pLCSDEV->iFrameOffset += SIZEOF_BAFFLE;
-            pLCSDEV->fPendingBaffle = 1;
         }
 
         // Point to next available LCS Frame slot in our buffer...
@@ -2694,10 +2685,7 @@ static int  LCS_DoEnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t 
         pLCSDEV->iFrameOffset += (U16) iSize;
 
         // Store offset of next frame
-        if ( pLCSDEV->fPendingBaffle )
-            STORE_HW( pReplyCmdFrame->bLCSHdr.hwOffset, ( pLCSDEV->iFrameOffset - SIZEOF_BAFFLE) );
-        else
-            STORE_HW( pReplyCmdFrame->bLCSHdr.hwOffset, pLCSDEV->iFrameOffset );
+        STORE_HW( pReplyCmdFrame->bLCSHdr.hwOffset, pLCSDEV->iFrameOffset );
 
         // Mark reply pending
         PTT_DEBUG( "SET  ReplyPending ", 1, pDEVBLK->devnum, bPort );
@@ -2720,150 +2708,165 @@ static int  LCS_DoEnqueueReplyFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t 
     return 0;   // success
 }
 
-//  // ====================================================================
-//  //                       LCS_EnqueueBaffleFrame
-//  // ====================================================================
-//  //
-//  // --------------------------------------------------------------------
+// ====================================================================
+//                     LCS_EnqueueReplyFrame_SNA
+// ====================================================================
 //
-//  static void LCS_EnqueueBaffleFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres )
-//  {
-//      PLCSPORT  pLCSPORT;
-//      DEVBLK*   pDEVBLK;
+// Copy a pre-built LCS Command Frame reply frame into the
+// next available frame slot. Keep trying if buffer is full.
+// The LCS device data lock must NOT be held when called!
 //
-//      BYTE      bPort;
-//      time_t    t1, t2;
+// --------------------------------------------------------------------
+
+static void LCS_EnqueueReplyFrame_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen )
+{
+    PLCSPORT  pLCSPORT;
+    DEVBLK*   pDEVBLK;
+
+    BYTE      bPort;
+    time_t    t1, t2;
+
+
+    bPort = pLCSDEV->bPort;
+    pLCSPORT = &pLCSDEV->pLCSBLK->Port[ bPort ];
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+
+    // Trace command reply frame about to be enqueued...
+    if (pLCSDEV->pLCSBLK->fDebug)
+    {
+        // HHC00923 "%1d:%04X CTC: lcs command reply enqueue"
+        WRMSG( HHC00923, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
+        net_data_trace( pDEVBLK, (BYTE*)pReply, iSize, '>', 'D', "reply SNA", 0 );
+    }
+
+    PTT_DEBUG( "ENQ RepFrame ENTRY", pReply->bCmdCode, pDEVBLK->devnum, bPort );
+
+    time( &t1 );
+
+    PTT_TIMING( "b4 repNQ", 0, iSize, 0 );
+
+    // While port open, not close in progress, and frame buffer full...
+
+    while (1
+        &&  pLCSPORT->fd != -1
+        && !pLCSPORT->fCloseInProgress
+        && LCS_DoEnqueueReplyFrame_SNA( pLCSDEV, pReply, iSize, hwBaffleLen ) < 0
+    )
+    {
+        if (pLCSDEV->pLCSBLK->fDebug)
+        {
+            // Limit message rate to only once every few seconds...
+
+            time( &t2 );
+
+            if ((t2 - t1) >= 3)     // (only once every 3 seconds)
+            {
+                t1 = t2;
+
+                // "CTC: lcs device port %2.2X: STILL trying to enqueue REPLY frame to device %4.4X %s"
+                WRMSG( HHC00978, "D", bPort, pLCSDEV->sAddr, "" );
+            }
+        }
+        PTT_TIMING( "*repNQ wait", 0, iSize, 0 );
+
+        // Wait for LCS_Read to empty the buffer...
+
+        ASSERT( ENOBUFS == errno );
+        usleep( CTC_DELAY_USECS );
+    }
+    PTT_TIMING( "af repNQ", 0, iSize, 0 );
+    PTT_DEBUG( "ENQ RepFrame EXIT ", pReply->bCmdCode, pDEVBLK->devnum, bPort );
+}
+
+// ====================================================================
+//                     LCS_DoEnqueueReplyFrame_SNA
+// ====================================================================
 //
+// Copy a pre-built LCS Command Frame reply frame of iSize bytes
+// to the next available frame slot. Returns 0 on success, -1 and
+// errno set to ENOBUFS on failure (no room (yet) in o/p buffer).
+// The LCS device data lock must NOT be held when called!
 //
-//      bPort = pLCSDEV->bPort;
-//      pLCSPORT = &pLCSDEV->pLCSBLK->Port[ bPort ];
-//      pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
-//
-//      // Trace command reply frame about to be enqueued...
-//      if (pLCSDEV->pLCSBLK->fDebug)
-//      {
-//          // HHC00923 "%1d:%04X CTC: lcs command reply enqueue"
-//          WRMSG( HHC00923, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
-//          net_data_trace( pDEVBLK, (BYTE*)pReply, iSize, '>', 'D', "reply", 0 );
-//      }
-//
-//      PTT_DEBUG( "ENQ BafFrame ENTRY", 0, pDEVBLK->devnum, 0 );
-//
-//      time( &t1 );
-//
-//      PTT_TIMING( "b4 BafNQ", 0, iSize, 0 );
-//
-//      // While port open, not close in progress, and frame buffer full...
-//
-//      while (1
-//          &&  pLCSPORT->fd != -1
-//          && !pLCSPORT->fCloseInProgress
-//          && LCS_DoEnqueueBaffleFrame( pLCSDEV, pReply, iSize, bBafflePres ) < 0
-//      )
-//      {
-//          if (pLCSDEV->pLCSBLK->fDebug)
-//          {
-//              // Limit message rate to only once every few seconds...
-//
-//              time( &t2 );
-//
-//              if ((t2 - t1) >= 3)     // (only once every 3 seconds)
-//              {
-//
-//                  t1 = t2;
-//
-//                  // "CTC: lcs device port %2.2X: STILL trying to enqueue REPLY frame to device %4.4X SNA"
-//                  WRMSG( HHC00978, "D", bPort, pLCSDEV->sAddr, "SNA" );
-//              }
-//          }
-//          PTT_TIMING( "*BafNQ wait", 0, iSize, 0 );
-//
-//          // Wait for LCS_Read to empty the buffer...
-//
-//          ASSERT( ENOBUFS == errno );
-//          usleep( CTC_DELAY_USECS );
-//      }
-//      PTT_TIMING( "af BafNQ", 0, iSize, 0 );
-//      PTT_DEBUG( "ENQ BafFrame EXIT ", 0, pDEVBLK->devnum, 0 );
-//  }
-//
-//  // ====================================================================
-//  //                       LCS_DoEnqueueBaffleFrame
-//  // ====================================================================
-//  //
-//  // --------------------------------------------------------------------
-//
-//  static int  LCS_DoEnqueueBaffleFrame( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, BYTE bBafflePres )
-//  {
-//      PLCSCMDHDR  pBaffleFrame;
-//      DEVBLK*     pDEVBLK;
-//      BYTE*       pBaffle;
-//      BYTE        bPort = pLCSDEV->bPort;
-//
-//      pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
-//
-//      PTT_DEBUG(       "GET  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
-//      obtain_lock( &pLCSDEV->DevDataLock );
-//      PTT_DEBUG(       "GOT  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
-//      {
-//          // Ensure we dont overflow the buffer
-//   /* FixMe! Need to account for bBafflePres here! */
-//          if ((pLCSDEV->iFrameOffset +            // Current buffer Offset
-//                iSize +                           // Size of reply frame
-//                sizeof(pReply->bLCSHdr.hwOffset)) // Size of Frame terminator
-//              > pLCSDEV->iMaxFrameBufferSize)     // Size of Frame buffer
-//          {
-//              PTT_DEBUG( "*DoENQBaf ENOBUFS ", 000, pDEVBLK->devnum, bPort );
-//              PTT_DEBUG( "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
-//              release_lock( &pLCSDEV->DevDataLock );
-//              errno = ENOBUFS;                    // No buffer space available
-//              return -1;                          // (-1==failure)
-//          }
-//
-//          if ( !pLCSDEV->iFrameOffset && bBafflePres )
-//          {
-//              pBaffle = pLCSDEV->bFrameBuffer;
-//              memset( pBaffle, 0, SIZEOF_BAFFLE );
-//              pLCSDEV->iFrameOffset += SIZEOF_BAFFLE;
-//              pLCSDEV->fPendingBaffle = 1;
-//          }
-//
-//          // Point to next available LCS Frame slot in our buffer...
-//          pBaffleFrame = (PLCSCMDHDR)( pLCSDEV->bFrameBuffer +
-//                                        pLCSDEV->iFrameOffset );
-//
-//          // Copy the reply frame into the frame buffer slot...
-//          memcpy( pBaffleFrame, pReply, iSize );
-//
-//          // Increment buffer offset to NEXT next-available-slot...
-//          pLCSDEV->iFrameOffset += (U16) iSize;
-//
-//          // Store offset of next frame
-//          if ( pLCSDEV->fPendingBaffle )
-//              STORE_HW( pBaffleFrame->bLCSHdr.hwOffset, ( pLCSDEV->iFrameOffset - SIZEOF_BAFFLE) );
-//          else
-//              STORE_HW( pBaffleFrame->bLCSHdr.hwOffset, pLCSDEV->iFrameOffset );
-//
-//          // Mark data pending
-//          PTT_DEBUG( "SET  DataPending!!", 1, pDEVBLK->devnum, bPort );
-//          pLCSDEV->fDataPending = 1;
-//      }
-//      PTT_DEBUG(        "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
-//      release_lock( &pLCSDEV->DevDataLock );
-//
-//      // (wake up "LCS_Read" function)
-//      PTT_DEBUG(       "GET  DevEventLock ", 000, pDEVBLK->devnum, bPort );
-//      obtain_lock( &pLCSDEV->DevEventLock );
-//      PTT_DEBUG(       "GOT  DevEventLock ", 000, pDEVBLK->devnum, bPort );
-//      {
-//          PTT_DEBUG(            "SIG  DevEvent     ", 000, pDEVBLK->devnum, bPort );
-//          signal_condition( &pLCSDEV->DevEvent );
-//      }
-//      PTT_DEBUG(        "REL  DevEventLock ", 000, pDEVBLK->devnum, bPort );
-//      release_lock( &pLCSDEV->DevEventLock );
-//
-//      return 0;   // success
-//  }
+// --------------------------------------------------------------------
+
+static int  LCS_DoEnqueueReplyFrame_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen )
+{
+    PLCSCMDHDR  pReplyCmdFrame;
+    DEVBLK*     pDEVBLK;
+    BYTE*       pBaffle;
+    BYTE        bPort = pLCSDEV->bPort;
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+
+    PTT_DEBUG(       "GET  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
+    obtain_lock( &pLCSDEV->DevDataLock );
+    PTT_DEBUG(       "GOT  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
+    {
+        // Ensure we dont overflow the buffer
+ /* FixMe! Need to account for hwBaffleLen/SIZEOF_BAFFLE here! */
+        if ((pLCSDEV->iFrameOffset +            // Current buffer Offset
+              iSize +                           // Size of reply frame
+              sizeof(pReply->bLCSHdr.hwOffset)) // Size of Frame terminator
+            > pLCSDEV->iMaxFrameBufferSize)     // Size of Frame buffer
+        {
+            PTT_DEBUG( "*DoENQRep ENOBUFS ", 000, pDEVBLK->devnum, bPort );
+            PTT_DEBUG( "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
+            release_lock( &pLCSDEV->DevDataLock );
+            errno = ENOBUFS;                    // No buffer space available
+            return -1;                          // (-1==failure)
+        }
+
+        if ( !pLCSDEV->iFrameOffset && hwBaffleLen )
+        {
+            pBaffle = pLCSDEV->bFrameBuffer;
+            memset( pBaffle, 0, SIZEOF_BAFFLE );
+//          STORE_HW( pBaffle, hwBaffleLen );              /* FixMe! One or other to be removed! */
+            pLCSDEV->iFrameOffset += SIZEOF_BAFFLE;
+            pLCSDEV->fPendingBaffle = 1;
+        }
+
+        //
+        if ( iSize )
+        {
+
+            // Point to next available LCS Frame slot in our buffer...
+            pReplyCmdFrame = (PLCSCMDHDR)( pLCSDEV->bFrameBuffer +
+                                           pLCSDEV->iFrameOffset );
+
+            // Copy the reply frame into the frame buffer slot...
+            memcpy( pReplyCmdFrame, pReply, iSize );
+
+            // Increment buffer offset to NEXT next-available-slot...
+            pLCSDEV->iFrameOffset += (U16) iSize;
+
+            // Store offset of next frame
+            if ( pLCSDEV->fPendingBaffle )
+                STORE_HW( pReplyCmdFrame->bLCSHdr.hwOffset, ( pLCSDEV->iFrameOffset - SIZEOF_BAFFLE) );
+            else
+                STORE_HW( pReplyCmdFrame->bLCSHdr.hwOffset, pLCSDEV->iFrameOffset );
+
+        }
+
+        // Mark reply pending
+        PTT_DEBUG( "SET  ReplyPending ", 1, pDEVBLK->devnum, bPort );
+        pLCSDEV->fReplyPending = 1;
+    }
+    PTT_DEBUG(        "REL  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
+    release_lock( &pLCSDEV->DevDataLock );
+
+    // (wake up "LCS_Read" function)
+    PTT_DEBUG(       "GET  DevEventLock ", 000, pDEVBLK->devnum, bPort );
+    obtain_lock( &pLCSDEV->DevEventLock );
+    PTT_DEBUG(       "GOT  DevEventLock ", 000, pDEVBLK->devnum, bPort );
+    {
+        PTT_DEBUG(            "SIG  DevEvent     ", 000, pDEVBLK->devnum, bPort );
+        signal_condition( &pLCSDEV->DevEvent );
+    }
+    PTT_DEBUG(        "REL  DevEventLock ", 000, pDEVBLK->devnum, bPort );
+    release_lock( &pLCSDEV->DevEventLock );
+
+    return 0;   // success
+}
 
 // ====================================================================
 //                       LCS_PortThread
@@ -3237,7 +3240,7 @@ static void*  LCS_PortThread( void* arg)
 
         // Match was found. Enqueue frame on buffer.
 
-        LCS_EnqueueEthFrame( pMatchingLCSDEV, pLCSPORT->bPort, szBuff, iLength );
+        LCS_EnqueueEthFrame( pLCSPORT, pMatchingLCSDEV, szBuff, iLength );
 
     } // end for (;;)
 
@@ -3490,14 +3493,15 @@ static void*  LCS_AttnThread( void* arg)
 //
 // --------------------------------------------------------------------
 
-static void LCS_EnqueueEthFrame( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize )
+static void LCS_EnqueueEthFrame( PLCSPORT pLCSPORT, PLCSDEV pLCSDEV, BYTE* pData, size_t iSize )
 {
-    time_t    t1, t2;
-    PLCSPORT  pLCSPORT;
     DEVBLK*   pDEVBLK;
+    BYTE      bPort;
+    time_t    t1, t2;
 
-    pLCSPORT = &pLCSDEV->pLCSBLK->Port[ bPort ];
-    pDEVBLK  = pLCSPORT->pLCSBLK->pDevices->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+    bPort   = pLCSPORT->bPort;
 
     PTT_DEBUG( "ENQ EthFrame ENTRY", 000, pDEVBLK->devnum, bPort );
 
@@ -3510,7 +3514,7 @@ static void LCS_EnqueueEthFrame( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_
     while (1
         &&  pLCSPORT->fd != -1
         && !pLCSPORT->fCloseInProgress
-        && LCS_DoEnqueueEthFrame( pLCSDEV, bPort, pData, iSize ) < 0
+        && LCS_DoEnqueueEthFrame( pLCSPORT, pLCSDEV, pData, iSize ) < 0
     )
     {
         if (EMSGSIZE == errno)
@@ -3572,12 +3576,15 @@ static void LCS_EnqueueEthFrame( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_
 //
 // --------------------------------------------------------------------
 
-static int  LCS_DoEnqueueEthFrame( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, size_t iSize )
+static int  LCS_DoEnqueueEthFrame( PLCSPORT pLCSPORT, PLCSDEV pLCSDEV, BYTE* pData, size_t iSize )
 {
     PLCSETHFRM  pLCSEthFrame;
     DEVBLK*     pDEVBLK;
+    BYTE        bPort;
+
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+    bPort   = pLCSPORT->bPort;
 
     // Will frame NEVER fit into buffer??
     if (iSize > MAX_LCS_ETH_FRAME_SIZE( pLCSDEV ) || iSize > 9000)
@@ -3592,8 +3599,8 @@ static int  LCS_DoEnqueueEthFrame( PLCSDEV pLCSDEV, BYTE bPort, BYTE* pData, siz
     PTT_DEBUG(       "GOT  DevDataLock  ", 000, pDEVBLK->devnum, bPort );
     {
         // Ensure we dont overflow the buffer
-        if ((pLCSDEV->iFrameOffset +                    // Current buffer Offset
-              sizeof( LCSETHFRM ) +                     // Size of Frame Header
+        if (( pLCSDEV->iFrameOffset +                   // Current buffer Offset
+              sizeof(LCSETHFRM) +                       // Size of Frame Header
               iSize +                                   // Size of Ethernet packet
               sizeof(pLCSEthFrame->bLCSHdr.hwOffset) )  // Size of Frame terminator
             > pLCSDEV->iMaxFrameBufferSize)             // Size of Frame buffer
@@ -3679,6 +3686,7 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
     PLCSHDR     pLCSHdr;
     PLCSDEV     pLCSDEV = (PLCSDEV)pDEVBLK->dev_data;
     size_t      iLength = 0;
+    int         iTraceLen;
     BYTE*       pBaffle;
     U16         hwBaffleLen;
 
@@ -3776,9 +3784,8 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
     if ( pLCSDEV->fPendingBaffle )
     {
         pBaffle = pLCSDEV->bFrameBuffer;
-        FETCH_HW( hwBaffleLen, pBaffle );
-        hwBaffleLen += (U16) ( iLength - SIZEOF_BAFFLE );
-        STORE_HW( pBaffle, hwBaffleLen );
+        hwBaffleLen = (U16) ( iLength - SIZEOF_BAFFLE );
+        STORE_HW( pBaffle, hwBaffleLen );                  /* FixMe! One or other to be removed! */
     }
 
     // (calculate residual and set memcpy amount)
@@ -3811,12 +3818,20 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
 
     memcpy( pIOBuf, pLCSDEV->bFrameBuffer, iLength );
 
-    // Display the data read by the guest, if debug is active.
+    // Display up to 256-bytes of the data going to the guest, if debug is active
     if (pLCSDEV->pLCSBLK->fDebug)
     {
         // "%1d:%04X %s: Present data of size %d bytes to guest"
         WRMSG(HHC00982, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname, (int)iLength );
-        net_data_trace( pDEVBLK, pIOBuf, iLength, '>', 'D', "data", 0 );
+        iTraceLen = iLength;
+        if (iTraceLen > 256)
+        {
+            iTraceLen = 256;
+            // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+            WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                 iTraceLen, (int)(iLength - iTraceLen) );
+        }
+        net_data_trace( pDEVBLK, pIOBuf, iTraceLen, '>', 'D', "data", 0 );
     }
 
     // Reset frame buffer to empty...
