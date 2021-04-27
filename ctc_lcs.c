@@ -19,6 +19,7 @@
 #include "herc_getopt.h"
 
 #define SIZEOF_BAFFLE 8
+#define MAX_TRACE_LEN 128
 
 //-----------------------------------------------------------------------------
 //  DEBUGGING: use 'ENABLE_TRACING_STMTS' to activate the compile-time
@@ -118,6 +119,7 @@ static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, si
 static void     LCS_EnqueueReplyFrame_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen );
 static int      LCS_DoEnqueueReplyFrame_SNA ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen );
 
+static void     GetFrameInfo( PETHFRM pEthFrame, char* pPktType, U16* pEthType, BYTE* pHas8022, BYTE* pHas8022Snap );
 static int      BuildOAT( char* pszOATName, PLCSBLK pLCSBLK );
 static char*    ReadOAT( char* pszOATName, FILE* fp, char* pszBuff );
 static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK, int argc, char** argv );
@@ -142,22 +144,6 @@ static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK, int argc, char** ar
         STORE_HW( (pReply)->bLCSCmdHdr.bLCSHdr.hwOffset, 0x0000 );   \
         STORE_HW( (pReply)->bLCSCmdHdr.hwReturnCode, 0x0000 );       \
     }                                                                \
-    while (0)
-
-#define SET_CPKTTYPE( ethtyp, pkttyp )                                              \
-    do                                                                              \
-    {                                                                               \
-        if ( (ethtyp) >= ETH_TYPE)                                                  \
-        {                                                                           \
-                 if ( (ethtyp) == ETH_TYPE_IP   ) STRLCPY( (pkttyp), "IPv4"    );   \
-            else if ( (ethtyp) == ETH_TYPE_IPV6 ) STRLCPY( (pkttyp), "IPv6"    );   \
-            else if ( (ethtyp) == ETH_TYPE_ARP  ) STRLCPY( (pkttyp), "ARP"     );   \
-            else if ( (ethtyp) == ETH_TYPE_RARP ) STRLCPY( (pkttyp), "RARP"    );   \
-            else if ( (ethtyp) == ETH_TYPE_SNA  ) STRLCPY( (pkttyp), "SNA"     );   \
-            else                                  STRLCPY( (pkttyp), "unknown" );   \
-        }                                                                           \
-        else                                      STRLCPY( (pkttyp), "802.3" );     \
-    }                                                                               \
     while (0)
 
 // ====================================================================
@@ -324,6 +310,8 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
         }
 
         // Establish SENSE ID and Command Information Word data.
+        // (In SNA mode VTAM checks the first four bytes of the
+        // Sense ID for 0xFF308801, 0xFF308860 and 0xFF30881F.)
         SetSIDInfo( pLCSDev->pDEVBLK[0], 0x3088, 0x60, 0x3088, 0x01 );
 //      SetCIWInfo( pLCSDev->pDEVBLK[0], 0, 0, 0x72, 0x0080 );
 //      SetCIWInfo( pLCSDev->pDEVBLK[0], 1, 1, 0x83, 0x0004 );
@@ -1077,9 +1065,11 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     U16         iEthLen      = 0;
     int         nEthFrames   = 0;
     int         nEthBytes    = 0;
-    char        cPktType[8];
     char        buf[32];
+    char        cPktType[16];
     U16         hwEthernetType;
+    BYTE        bHas8022;
+    BYTE        bHas8022Snap;
     U16         hwBaffleLen;
     BYTE*       pIOBufStart = NULL;
     int         iTraceLen;
@@ -1090,9 +1080,9 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
         // "%1d:%04X %s: Accept data of size %d bytes from guest"
         WRMSG(HHC00981, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum,  pDEVBLK->typname, (int)sCount );
         iTraceLen = sCount;
-        if (iTraceLen > 256)
+        if (iTraceLen > MAX_TRACE_LEN)
         {
-            iTraceLen = 256;
+            iTraceLen = MAX_TRACE_LEN;
             // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
             WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                  iTraceLen, (int)(sCount - iTraceLen) );
@@ -1158,6 +1148,8 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                 pEthFrame    = (PETHFRM) pLCSEthFrame->bData;
                 iEthLen      = iLength - sizeof(LCSETHFRM);
 
+                GetFrameInfo( pEthFrame, &cPktType[0], &hwEthernetType, &bHas8022, &bHas8022Snap );
+
                 // Fill in LCS source MAC address if not specified by guest program
                 if (memcmp( pEthFrame->bSrcMAC, zeromac, sizeof( MAC )) == 0)
                 {
@@ -1178,14 +1170,19 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                 // Trace Ethernet frame before sending to TAP device
                 if (pLCSBLK->fDebug)
                 {
-                    FETCH_HW( hwEthernetType, pEthFrame->hwEthernetType );
-                    SET_CPKTTYPE( hwEthernetType, cPktType );
-
                     // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
                     WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                          pLCSHDR->bSlot, iEthLen, cPktType,
                                          pLCSPORT->szNetIfName );
-                    net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iEthLen, '<', 'D', "eth frame", 0 );
+                    iTraceLen = iEthLen;
+                    if (iTraceLen > MAX_TRACE_LEN)
+                    {
+                        iTraceLen = MAX_TRACE_LEN;
+                        // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+                        WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                             iTraceLen, (iEthLen - iTraceLen) );
+                    }
+                    net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
                 }
 
                 // Write the Ethernet frame to the TAP device
@@ -1440,14 +1437,19 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                 // Trace Ethernet frame before sending to TAP device
                 if (pLCSBLK->fDebug)
                 {
-                    FETCH_HW( hwEthernetType, pEthFrame->hwEthernetType );
-                    SET_CPKTTYPE( hwEthernetType, cPktType );
-
                     // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
                     WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                          pLCSHDR->bSlot, iEthLen, cPktType,
                                          pLCSPORT->szNetIfName );
-                    net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iEthLen, '<', 'D', "eth frame", 0 );
+                    iTraceLen = iEthLen;
+                    if (iTraceLen > MAX_TRACE_LEN)
+                    {
+                        iTraceLen = MAX_TRACE_LEN;
+                        // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+                        WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                             iTraceLen, (iEthLen - iTraceLen) );
+                    }
+                    net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
                 }
 
                 // Write the Ethernet frame to the TAP device
@@ -2890,13 +2892,16 @@ static void*  LCS_PortThread( void* arg)
     PIP4FRM     pIPFrame   = NULL;
     PARPFRM     pARPFrame  = NULL;
     int         iLength;
-    U16         hwEthernetType;
     U32         lIPAddress;             // (network byte order)
     BYTE*       pMAC;
     BYTE        szBuff[2048];
     char        bReported = 0;
     char        bStartReported = 0;
-    char        cPktType[8];
+    char        cPktType[16];
+    U16         hwEthernetType;
+    BYTE        bHas8022;
+    BYTE        bHas8022Snap;
+    int         iTraceLen;
 
     pDEVBLK = pLCSPORT->pLCSBLK->pDevices->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
 
@@ -2990,16 +2995,23 @@ static void*  LCS_PortThread( void* arg)
 
         // Point to ethernet frame and determine frame type
         pEthFrame = (PETHFRM)szBuff;
-        FETCH_HW( hwEthernetType, pEthFrame->hwEthernetType );
+
+        GetFrameInfo( pEthFrame, &cPktType[0], &hwEthernetType, &bHas8022, &bHas8022Snap );
 
         if (pLCSPORT->pLCSBLK->fDebug)
         {
-            SET_CPKTTYPE( hwEthernetType, cPktType );
-
             // "%1d:%04X %s: port %2.2X: Receive frame of size %d bytes (with %s packet) from device %s"
             WRMSG( HHC00984, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                   pLCSPORT->bPort, iLength, cPktType, pLCSPORT->szNetIfName );
-            net_data_trace( pDEVBLK, szBuff, iLength, '>', 'D', "eth frame", 0 );
+            iTraceLen = iLength;
+            if (iTraceLen > MAX_TRACE_LEN)
+            {
+                iTraceLen = MAX_TRACE_LEN;
+                // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+                WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                     iTraceLen, (iLength - iTraceLen) );
+            }
+            net_data_trace( pDEVBLK, szBuff, iTraceLen, '>', 'D', "eth frame", 0 );
             bReported = 0;
         }
 
@@ -3031,135 +3043,107 @@ static void*  LCS_PortThread( void* arg)
             // Only process devices that are on this port
             if (pLCSDev->bPort == pLCSPORT->bPort)
             {
-                // To quote Wikipedia "The EtherType field is two octets long
-                // and it can be used for two different purposes. Values of 1500
-                // and below mean that it is used to indicate the size of the
-                // payload in octets, while values of 1536 and above indicate
-                // that it is used as an EtherType, to indicate which protocol
-                // is encapsulated in the payload of the frame."
-                if (hwEthernetType >= ETH_TYPE)  // i.e. >= 1536
+                // hwEthernetType indicates which protocol is encapsulated in the payload.
+                // bHas8022 indicates whether the payload begins with an 802.2 LLC.
+                // bHas8022Snap indicates whether the payload begins with an 802.2 LLC and SNAP.
+                if (hwEthernetType == ETH_TYPE_IP)
                 {
-                    // EtherType indicates which protocol is encapsulated in the payload.
-                    if (hwEthernetType == ETH_TYPE_IP)
-                    {
+                    if (!bHas8022Snap)
                         pIPFrame   = (PIP4FRM)pEthFrame->bData;
-                        lIPAddress = pIPFrame->lDstIP;  // (network byte order)
+                    else
+                        pIPFrame   = (PIP4FRM)pEthFrame->bData+ETH_LLC_SNAP_SIZE;
+                    lIPAddress = pIPFrame->lDstIP;  // (network byte order)
 
-                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
-                        {
-                            union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
-                            char  str[40];
-
-                            c.i = ntohl(lIPAddress);
-                            MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
-
-                            // "CTC: lcs device port %2.2X: IPv4 frame received for %s"
-                            WRMSG( HHC00946, "D", pLCSPORT->bPort, str );
-                            bReported = 1;
-                        }
-
-                        // If this is an exact match use it
-                        // otherwise look for primary and secondary
-                        // default devices
-                        if (pLCSDev->lIPAddress == lIPAddress)
-                        {
-                            pMatchingLCSDEV = pLCSDev;
-                            break;
-                        }
-                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                            pPrimaryLCSDEV = pLCSDev;
-                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                            pSecondaryLCSDEV = pLCSDev;
-                    }
-                    else if (hwEthernetType == ETH_TYPE_ARP)
+                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
                     {
-                        pARPFrame  = (PARPFRM)pEthFrame->bData;
-                        lIPAddress = pARPFrame->lTargIPAddr; // (network byte order)
+                        union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
+                        char  str[40];
 
-                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
-                        {
-                            union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
-                            char  str[40];
+                        c.i = ntohl(lIPAddress);
+                        MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
 
-                            c.i = ntohl(lIPAddress);
-                            MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
-
-                            // "CTC: lcs device port %2.2X: ARP frame received for %s"
-                            WRMSG( HHC00947, "D", pLCSPORT->bPort, str );
-                            bReported = 1;
-                        }
-
-                        // If this is an exact match use it
-                        // otherwise look for primary and secondary
-                        // default devices
-                        if (pLCSDev->lIPAddress == lIPAddress)
-                        {
-                            pMatchingLCSDEV = pLCSDev;
-                            break;
-                        }
-                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                            pPrimaryLCSDEV = pLCSDev;
-                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                            pSecondaryLCSDEV = pLCSDev;
+                        // "CTC: lcs device port %2.2X: IPv4 frame received for %s"
+                        WRMSG( HHC00946, "D", pLCSPORT->bPort, str );
+                        bReported = 1;
                     }
-                    else if (hwEthernetType == ETH_TYPE_RARP)
+
+                    // If this is an exact match use it
+                    // otherwise look for primary and secondary
+                    // default devices
+                    if (pLCSDev->lIPAddress == lIPAddress)
                     {
-                        pARPFrame  = (PARPFRM)pEthFrame->bData;
-                        pMAC = pARPFrame->bTargEthAddr;
-
-                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
-                        {
-                            // "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-                            WRMSG( HHC00948, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
-                            bReported = 1;
-                        }
-
-                        // If this is an exact match use it
-                        // otherwise look for primary and secondary
-                        // default devices
-                        if (memcmp( pMAC, pLCSPORT->MAC_Address, IFHWADDRLEN ) == 0)
-                        {
-                            pMatchingLCSDEV = pLCSDev;
-                            break;
-                        }
-                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                            pPrimaryLCSDEV = pLCSDev;
-                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                            pSecondaryLCSDEV = pLCSDev;
+                        pMatchingLCSDEV = pLCSDev;
+                        break;
                     }
-                    else if (hwEthernetType == ETH_TYPE_SNA)
-                    {
-                        pMAC = pEthFrame->bDestMAC;
-
-                        if (pLCSPORT->pLCSBLK->fDebug && !bReported)
-                        {
-                            // "CTC: lcs device port %2.2X: SNA frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-                            WRMSG( HHC00949, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
-                            bReported = 1;
-                        }
-
-                        if (pLCSDev->bMode == LCSDEV_MODE_SNA)
-                        {
-                            pMatchingLCSDEV = pLCSDev;
-                            break;
-                        }
-                        else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
-                            pPrimaryLCSDEV = pLCSDev;
-                        else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
-                            pSecondaryLCSDEV = pLCSDev;
-                    }
+                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                        pPrimaryLCSDEV = pLCSDev;
+                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                        pSecondaryLCSDEV = pLCSDev;
                 }
-                else  //  hwEthernetType < ETH_TYPE  i.e. < 1536
+                else if (hwEthernetType == ETH_TYPE_ARP)
                 {
-                    // EtherType indicates the size of the payload, which should have
-                    // a value of 46 to 1500 inclusive. However, frames have been seen
-                    // with EtherType equal to three (0x0003), which was presumably the
-                    // size of the following the 802.2 LLC fields, rather than the size
-                    // of the entire payload.
-                    // The LLC fields are a 1-byte Destination Service Access Point
-                    // (DSAP), a 1-byte Source Service Access Point (SSAP), and a 1-
-                    // or 2-byte Control Field.
-                    // We will assume this is an 802.3 frame containing SNA traffic.
+                    if (!bHas8022Snap)
+                        pARPFrame  = (PARPFRM)pEthFrame->bData;
+                    else
+                        pARPFrame  = (PARPFRM)pEthFrame->bData+ETH_LLC_SNAP_SIZE;
+                    lIPAddress = pARPFrame->lTargIPAddr; // (network byte order)
+
+                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                    {
+                        union converter { struct { unsigned char a, b, c, d; } b; U32 i; } c;
+                        char  str[40];
+
+                        c.i = ntohl(lIPAddress);
+                        MSGBUF( str, "%8.08X %d.%d.%d.%d", c.i, c.b.d, c.b.c, c.b.b, c.b.a );
+
+                        // "CTC: lcs device port %2.2X: ARP frame received for %s"
+                        WRMSG( HHC00947, "D", pLCSPORT->bPort, str );
+                        bReported = 1;
+                    }
+
+                    // If this is an exact match use it
+                    // otherwise look for primary and secondary
+                    // default devices
+                    if (pLCSDev->lIPAddress == lIPAddress)
+                    {
+                        pMatchingLCSDEV = pLCSDev;
+                        break;
+                    }
+                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                        pPrimaryLCSDEV = pLCSDev;
+                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                        pSecondaryLCSDEV = pLCSDev;
+                }
+                else if (hwEthernetType == ETH_TYPE_RARP)
+                {
+                    if (!bHas8022Snap)
+                        pARPFrame  = (PARPFRM)pEthFrame->bData;
+                    else
+                        pARPFrame  = (PARPFRM)pEthFrame->bData+ETH_LLC_SNAP_SIZE;
+                    pMAC = pARPFrame->bTargEthAddr;
+
+                    if (pLCSPORT->pLCSBLK->fDebug && !bReported)
+                    {
+                        // "CTC: lcs device port %2.2X: RARP frame received for %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                        WRMSG( HHC00948, "D" ,pLCSPORT->bPort ,*(pMAC+0) ,*(pMAC+1) ,*(pMAC+2) ,*(pMAC+3) ,*(pMAC+4) ,*(pMAC+5) );
+                        bReported = 1;
+                    }
+
+                    // If this is an exact match use it
+                    // otherwise look for primary and secondary
+                    // default devices
+                    if (memcmp( pMAC, pLCSPORT->MAC_Address, IFHWADDRLEN ) == 0)
+                    {
+                        pMatchingLCSDEV = pLCSDev;
+                        break;
+                    }
+                    else if (pLCSDev->bType == LCSDEV_TYPE_PRIMARY)
+                        pPrimaryLCSDEV = pLCSDev;
+                    else if (pLCSDev->bType == LCSDEV_TYPE_SECONDARY)
+                        pSecondaryLCSDEV = pLCSDev;
+                }
+                else if (hwEthernetType == ETH_TYPE_SNA)
+                {
                     pMAC = pEthFrame->bDestMAC;
 
                     if (pLCSPORT->pLCSBLK->fDebug && !bReported)
@@ -3169,7 +3153,8 @@ static void*  LCS_PortThread( void* arg)
                         bReported = 1;
                     }
 
-                    if (pLCSDev->bMode == LCSDEV_MODE_SNA)
+//??                if (pLCSDev->bMode == LCSDEV_MODE_SNA)
+                    if (memcmp( pMAC, pLCSPORT->MAC_Address, IFHWADDRLEN ) == 0)
                     {
                         pMatchingLCSDEV = pLCSDev;
                         break;
@@ -3824,9 +3809,9 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
         // "%1d:%04X %s: Present data of size %d bytes to guest"
         WRMSG(HHC00982, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname, (int)iLength );
         iTraceLen = iLength;
-        if (iTraceLen > 256)
+        if (iTraceLen > MAX_TRACE_LEN)
         {
-            iTraceLen = 256;
+            iTraceLen = MAX_TRACE_LEN;
             // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
             WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                  iTraceLen, (int)(iLength - iTraceLen) );
@@ -3856,6 +3841,87 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
     release_lock( &pLCSDEV->DevDataLock );
 
     PTT_DEBUG( "READ: EXIT        ", 000, pDEVBLK->devnum, -1 );
+}
+
+// ====================================================================
+//                         GetFrameInfo
+// ====================================================================
+//  To quote Wikipedia "The EtherType field is two octets long and it
+//  can be used for two different purposes. Values of 1500 and below
+//  mean that it is used to indicate the size of the payload in
+//  octets, while values of 1536 and above indicate that it is used as
+//  an EtherType, to indicate which protocol is encapsulated in the
+//  payload of the frame."
+//
+//  When the EtherType indicates the size of the payload the frame is
+//  assumed to be IEEE 802.3 layout, and the EtherType should be
+//  followed by a Logical Link Control (LLC) sub-layer as defined in
+//  the IEEE 802.2 standards.
+//
+//  The LLC will contain at least a 1-byte Destination Service Access
+//  Point (DSAP), a 1-byte Source Service Access Point (SSAP), and a
+//  1- or 2-byte Control. If the LLC is used in conjunction with the
+//  Sub-Network Access Protocol (SNAP), the LLC will contain a a
+//  1-byte DSAP, a 1-byte SSAP, a 1-byte Control, a 3-byte IEEE
+//  Organizationally Unique Identifier (OUI), and a 2-byte protocol
+//  ID.
+//
+//  The cPktType area must be 14 or more characters in length.
+//
+
+void  GetFrameInfo( PETHFRM pEthFrame, char* pPktType, U16* pEthType, BYTE* pHas8022, BYTE* pHas8022Snap )
+{
+    char  pkttyp[16];
+    U32   oui;
+    U16   ethtyp;
+    BYTE  ieee, snap, dsap, ssap, ctl;
+
+    memset(pkttyp, 0, sizeof(pkttyp));
+    FETCH_HW( ethtyp, pEthFrame->hwEthernetType );
+    ieee = FALSE;
+    snap = FALSE;
+    if (ethtyp >= ETH_TYPE)
+    {
+             if (ethtyp == ETH_TYPE_IP   )    STRLCPY( pkttyp, "IPv4"    );
+        else if (ethtyp == ETH_TYPE_IPV6 )    STRLCPY( pkttyp, "IPv6"    );
+        else if (ethtyp == ETH_TYPE_ARP  )    STRLCPY( pkttyp, "ARP"     );
+        else if (ethtyp == ETH_TYPE_RARP )    STRLCPY( pkttyp, "RARP"    );
+        else if (ethtyp == ETH_TYPE_SNA  )    STRLCPY( pkttyp, "SNA"     );
+        else                                  STRLCPY( pkttyp, "unknown" );
+    }
+    else
+    {
+        ieee = TRUE;
+                                              STRLCPY( pkttyp, "802.3 "  );
+        dsap = (pEthFrame->bData[0] & 0xFE);
+        ssap = (pEthFrame->bData[1] & 0xFE);
+        ctl =   pEthFrame->bData[2];
+        FETCH_F3( oui, pEthFrame->bData+3 );
+        if ( dsap == 0xAA  &&  ssap == 0xAA  &&  ctl == 0x03  &&  !oui )
+        {
+          snap = TRUE;
+          FETCH_HW(ethtyp, pEthFrame->bData+6 );
+               if (ethtyp == ETH_TYPE_IP   )  STRLCAT( pkttyp, "IPv4"    );
+          else if (ethtyp == ETH_TYPE_IPV6 )  STRLCAT( pkttyp, "IPv6"    );
+          else if (ethtyp == ETH_TYPE_ARP  )  STRLCAT( pkttyp, "ARP"     );
+          else if (ethtyp == ETH_TYPE_RARP )  STRLCAT( pkttyp, "RARP"    );
+          else if (ethtyp == ETH_TYPE_SNA  )  STRLCAT( pkttyp, "SNA"     );
+          else                                STRLCAT( pkttyp, "unknown" );
+        }
+        else if ( dsap == 0x04  &&  ssap == 0x04 )
+        {
+                                              ethtyp = ETH_TYPE_SNA;
+                                              STRLCAT( pkttyp, "SNA"     );
+        }
+        else
+        {
+                                              STRLCAT( pkttyp, "unknown" );
+        }
+    }
+    memcpy( pPktType, pkttyp, (strlen(pkttyp)+1) );
+    *pEthType = ethtyp;
+    *pHas8022 = ieee;
+    *pHas8022Snap = snap;
 }
 
 // ====================================================================

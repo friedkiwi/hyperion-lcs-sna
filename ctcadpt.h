@@ -34,6 +34,7 @@
 #define CTC_3088_01     0x308801        // 3172 XCA
 #define CTC_3088_04     0x308804        // 3088 model 1 CTCA
 #define CTC_3088_08     0x308808        // 3088 model 2 CTCA
+#define CTC_3088_1E     0x30881E        // FICON CTC
 #define CTC_3088_1F     0x30881F        // 3172 LCS
 #define CTC_3088_60     0x308860        // OSA or 8232 LCS
 #define CTC_3088_61     0x308861        // CLAW device
@@ -186,6 +187,8 @@ typedef struct _ETHFRM ETHFRM, *PETHFRM;
 #define  ETH_TYPE_SNA       0x80D5     // IBM SNA Service over Ethernet
 #define  ETH_TYPE_IPV6      0x86dd
 #define  ETH_TYPE_VLANTAG   0x8100
+
+#define  ETH_LLC_SNAP_SIZE  8
 
 
 // --------------------------------------------------------------------
