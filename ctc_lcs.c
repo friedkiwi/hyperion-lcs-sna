@@ -120,6 +120,7 @@ static void     LCS_EnqueueReplyFrame_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply
 static int      LCS_DoEnqueueReplyFrame_SNA ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize, U16 hwBaffleLen );
 
 static void     GetFrameInfo( PETHFRM pEthFrame, char* pPktType, U16* pEthType, BYTE* pHas8022, BYTE* pHas8022Snap );
+static void     GetIfMACAddress( PLCSPORT pLCSPORT );
 static int      BuildOAT( char* pszOATName, PLCSBLK pLCSBLK );
 static char*    ReadOAT( char* pszOATName, FILE* fp, char* pszBuff );
 static int      ParseArgs( DEVBLK* pDEVBLK, PLCSBLK pLCSBLK, int argc, char** argv );
@@ -393,6 +394,20 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
                                   pLCSDev->pDEVBLK[0]->typname,
                                   pLCSPORT->szNetIfName, "TAP");
 
+            //
+            if (!pLCSPORT->fPreconfigured)
+            {
+#ifdef OPTION_TUNTAP_SETMACADDR
+                if (pLCSPORT->fLocalMAC)
+                {
+                    VERIFY( TUNTAP_SetMACAddr( pLCSPORT->szNetIfName,
+                                               pLCSPORT->szMACAddress ) == 0 );
+                }
+#endif // OPTION_TUNTAP_SETMACADDR
+                VERIFY( TUNTAP_SetMTU( pLCSPORT->szNetIfName, "1500" ) == 0 );
+                VERIFY( TUNTAP_SetIPAddr( pLCSPORT->szNetIfName, "0.0.0.0" ) == 0 );
+            }
+
 #if defined(OPTION_W32_CTCI)
 
             // Set the specified driver/dll i/o buffer sizes..
@@ -425,6 +440,9 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
                 }
             }
 #endif
+
+            // Get and display the tap interface MAC address.
+            GetIfMACAddress( pLCSPORT );
 
             // Indicate that the port is used.
             pLCSPORT->fUsed        = 1;
@@ -1639,7 +1657,6 @@ static void  LCS_Startup( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     LCSSTRTFRM  Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
     PLCSSTRTFRM pLCSSTRTFRM = (PLCSSTRTFRM)&Reply;
-    PLCSPORT    pLCSPORT;
     U16         iOrigMaxFrameBufferSize;
 
     INIT_REPLY_FRAME( pLCSSTRTFRM, iReplyLen, pCmdFrame, iCmdLen );
@@ -1678,21 +1695,6 @@ static void  LCS_Startup( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
                 CTC_MIN_FRAME_BUFFER_SIZE );
             pLCSDEV->iMaxFrameBufferSize = iOrigMaxFrameBufferSize;
         }
-    }
-
-    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-
-    if (!pLCSPORT->fPreconfigured)
-    {
-        VERIFY( TUNTAP_SetIPAddr( pLCSPORT->szNetIfName, "0.0.0.0" ) == 0 );
-        VERIFY( TUNTAP_SetMTU   ( pLCSPORT->szNetIfName,  "1500"   ) == 0 );
-#ifdef OPTION_TUNTAP_SETMACADDR
-        if (pLCSPORT->fLocalMAC)
-        {
-            VERIFY( TUNTAP_SetMACAddr( pLCSPORT->szNetIfName,
-                                       pLCSPORT->szMACAddress ) == 0 );
-        }
-#endif // OPTION_TUNTAP_SETMACADDR
     }
 
     LCS_EnqueueReplyFrame( pLCSDEV, (PLCSCMDHDR)pLCSSTRTFRM, iReplyLen );
@@ -1987,87 +1989,12 @@ static void  LCS_LanStats( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     int        iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
     PLCSLSTFRM pLCSLSTFRM = (PLCSLSTFRM)&Reply;
     PLCSPORT   pLCSPORT;
-    BYTE*      pPortMAC;
-    BYTE*      pIFaceMAC;
-    int        fd, rc, success;
-    ifreq      ifr;
 
 
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-    pPortMAC = (BYTE*) &pLCSPORT->MAC_Address;
-    pIFaceMAC = pPortMAC;
 
-    /* Not all systems can return the hardware address of an interface. */
-#if defined(SIOCGIFHWADDR)
-
-    while (1)
-    {
-        fd = socket( AF_INET, SOCK_STREAM, IPPROTO_IP );
-
-        if (fd == -1)
-        {
-            // "CTC: error in function %s: %s"
-            rc = HSO_errno;
-            WRMSG( HHC00940, "E", "socket()", strerror( rc ) );
-            success = FALSE;
-            break;
-        }
-
-        memset( &ifr, 0, sizeof( ifr ) );
-        STRLCPY( ifr.ifr_name, pLCSPORT->szNetIfName );
-
-        rc = TUNTAP_IOCtl( fd, SIOCGIFHWADDR, (char*)&ifr );
-
-        close( fd );
-
-        if (rc != 0)
-        {
-            // "CTC: ioctl %s failed for device %s: %s"
-            rc = HSO_errno;
-            WRMSG( HHC00941, "E", "SIOCGIFHWADDR", pLCSPORT->szNetIfName, strerror( rc ) );
-            success = FALSE;
-            break;
-        }
-
-        pIFaceMAC  = (BYTE*) ifr.ifr_hwaddr.sa_data;
-        rc = 0;
-        success = TRUE;
-        break;
-    }
-
-#else // !defined(SIOCGIFHWADDR)
-
-    rc = 0;
-    success = TRUE;
-
-#endif // defined(SIOCGIFHWADDR)
-
-    if (success)
-    {
-        /* Report what MAC address we will really be using */
-        // "CTC: lcs device '%s' using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-        WRMSG( HHC00942, "I", pLCSPORT->szNetIfName, *(pIFaceMAC+0),*(pIFaceMAC+1),
-                                        *(pIFaceMAC+2),*(pIFaceMAC+3),
-                                        *(pIFaceMAC+4),*(pIFaceMAC+5));
-
-        /* Issue warning if different from specified value */
-        if (memcmp( pPortMAC, pIFaceMAC, IFHWADDRLEN ) != 0)
-        {
-            if (pLCSPORT->fLocalMAC)
-            {
-                // "CTC: lcs device %s not using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-                WRMSG( HHC00943, "W", pLCSPORT->szNetIfName, *(pPortMAC+0),*(pPortMAC+1),
-                                                *(pPortMAC+2),*(pPortMAC+3),
-                                                *(pPortMAC+4),*(pPortMAC+5));
-            }
-
-            memcpy( pPortMAC, pIFaceMAC, IFHWADDRLEN );
-
-            snprintf(pLCSPORT->szMACAddress, sizeof(pLCSPORT->szMACAddress),
-                "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X", *(pPortMAC+0), *(pPortMAC+1),
-                *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
-        }
-    }
+    // Get and display the tap interface MAC address.
+    GetIfMACAddress( pLCSPORT );
 
     INIT_REPLY_FRAME( pLCSLSTFRM, iReplyLen, pCmdFrame, iCmdLen );
 
@@ -2075,8 +2002,7 @@ static void  LCS_LanStats( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
     /* unless the TAP mechanism is designed as such          */
     /* cf : hostopts.h for an explanation                    */
     iReplyLen = sizeof(Reply);
-    STORE_HW( pLCSLSTFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
-    memcpy( pLCSLSTFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
+    memcpy( pLCSLSTFRM->MAC_Address, pLCSPORT->MAC_Address, IFHWADDRLEN );
 #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
     pLCSLSTFRM->MAC_Address[5]++;
 #endif
@@ -2321,17 +2247,7 @@ static void  LCS_StartLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
             // This lets the packets start flowing...
 
             if (!pLCSPORT->fPreconfigured)
-            {
                 VERIFY( TUNTAP_SetFlags( pLCSPORT->szNetIfName, nIFFlags ) == 0 );
-                VERIFY( TUNTAP_SetMTU( pLCSPORT->szNetIfName,  "1500"   ) == 0 );
-#ifdef OPTION_TUNTAP_SETMACADDR
-                if (pLCSPORT->fLocalMAC)
-                {
-                    VERIFY( TUNTAP_SetMACAddr( pLCSPORT->szNetIfName,
-                                               pLCSPORT->szMACAddress ) == 0 );
-                }
-#endif // OPTION_TUNTAP_SETMACADDR
-            }
 
             fStartPending = 1;
         }
@@ -2416,87 +2332,12 @@ static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     int        iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
     PLCSLSSFRM pLCSLSSFRM = (PLCSLSSFRM)&Reply;
     PLCSPORT   pLCSPORT;
-    BYTE*      pPortMAC;
-    BYTE*      pIFaceMAC;
-    int        fd, rc, success;
-    ifreq      ifr;
 
 
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-    pPortMAC = (BYTE*) &pLCSPORT->MAC_Address;
-    pIFaceMAC = pPortMAC;
 
-    /* Not all systems can return the hardware address of an interface. */
-#if defined(SIOCGIFHWADDR)
-
-    while (1)
-    {
-        fd = socket( AF_INET, SOCK_STREAM, IPPROTO_IP );
-
-        if (fd == -1)
-        {
-            // "CTC: error in function %s: %s"
-            rc = HSO_errno;
-            WRMSG( HHC00940, "E", "socket()", strerror( rc ) );
-            success = FALSE;
-            break;
-        }
-
-        memset( &ifr, 0, sizeof( ifr ) );
-        STRLCPY( ifr.ifr_name, pLCSPORT->szNetIfName );
-
-        rc = TUNTAP_IOCtl( fd, SIOCGIFHWADDR, (char*)&ifr );
-
-        close( fd );
-
-        if (rc != 0)
-        {
-            // "CTC: ioctl %s failed for device %s: %s"
-            rc = HSO_errno;
-            WRMSG( HHC00941, "E", "SIOCGIFHWADDR", pLCSPORT->szNetIfName, strerror( rc ) );
-            success = FALSE;
-            break;
-        }
-
-        pIFaceMAC  = (BYTE*) ifr.ifr_hwaddr.sa_data;
-        rc = 0;
-        success = TRUE;
-        break;
-    }
-
-#else // !defined(SIOCGIFHWADDR)
-
-    rc = 0;
-    success = TRUE;
-
-#endif // defined(SIOCGIFHWADDR)
-
-    if (success)
-    {
-        /* Report what MAC address we will really be using */
-        // "CTC: lcs device '%s' using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-        WRMSG( HHC00942, "I", pLCSPORT->szNetIfName, *(pIFaceMAC+0),*(pIFaceMAC+1),
-                                        *(pIFaceMAC+2),*(pIFaceMAC+3),
-                                        *(pIFaceMAC+4),*(pIFaceMAC+5));
-
-        /* Issue warning if different from specified value */
-        if (memcmp( pPortMAC, pIFaceMAC, IFHWADDRLEN ) != 0)
-        {
-            if (pLCSPORT->fLocalMAC)
-            {
-                // "CTC: lcs device %s not using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
-                WRMSG( HHC00943, "W", pLCSPORT->szNetIfName, *(pPortMAC+0),*(pPortMAC+1),
-                                                *(pPortMAC+2),*(pPortMAC+3),
-                                                *(pPortMAC+4),*(pPortMAC+5));
-            }
-
-            memcpy( pPortMAC, pIFaceMAC, IFHWADDRLEN );
-
-            snprintf(pLCSPORT->szMACAddress, sizeof(pLCSPORT->szMACAddress),
-                "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X", *(pPortMAC+0), *(pPortMAC+1),
-                *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
-        }
-    }
+    // Get and display the tap interface MAC address.
+    GetIfMACAddress( pLCSPORT );
 
     INIT_REPLY_FRAME( pLCSLSSFRM, iReplyLen, pCmdFrame, iCmdLen );
 
@@ -2506,14 +2347,13 @@ static void  LCS_LanStats_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLe
     iReplyLen = sizeof(Reply);
     pLCSLSSFRM->bLCSCmdHdr.bLCSHdr.bSlot = pLCSDEV->bPort;
     pLCSLSSFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
-    STORE_HW( pLCSLSSFRM->bLCSCmdHdr.hwReturnCode, (S16) rc );
 //  pLCSLSSFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSLSSFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
     pLCSLSSFRM->bUnknown1                = 0x01;  /* Count? */
     pLCSLSSFRM->bUnknown2                = 0x04;  /* This byte is kept by VTAM. SAP? Probably not. 0x04 works, 0x08 doesn't. */
     pLCSLSSFRM->bUnknown3                = 0x00;  /* This byte is kept by VTAM. */
     pLCSLSSFRM->bUnknown7                = 0x06;  /* MAC length? */
-    memcpy( pLCSLSSFRM->MAC_Address, pIFaceMAC, IFHWADDRLEN );
+    memcpy( pLCSLSSFRM->MAC_Address, pLCSPORT->MAC_Address, IFHWADDRLEN );
 #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
     pLCSLSSFRM->MAC_Address[5]++;
 #endif
@@ -2988,8 +2828,8 @@ static void*  LCS_PortThread( void* arg)
         {
             if (pLCSPORT->fd < 0 || pLCSPORT->fCloseInProgress)
                 break;
-            // "CTC: lcs device read error from port %2.2X: %s"
-            WRMSG( HHC00944, "E", pLCSPORT->bPort, strerror( errno ) );
+            // "CTC: lcs interface %s read error from port %2.2X: %s"
+            WRMSG( HHC00944, "E", pLCSPORT->szNetIfName, pLCSPORT->bPort, strerror( errno ) );
             break;
         }
 
@@ -3922,6 +3762,94 @@ void  GetFrameInfo( PETHFRM pEthFrame, char* pPktType, U16* pEthType, BYTE* pHas
     *pEthType = ethtyp;
     *pHas8022 = ieee;
     *pHas8022Snap = snap;
+}
+
+// ====================================================================
+//                         GetIfMACAddress
+// ====================================================================
+
+void     GetIfMACAddress( PLCSPORT pLCSPORT )
+{
+
+    BYTE*      pPortMAC;
+    BYTE*      pIFaceMAC;
+    int        fd, rc, success;
+    ifreq      ifr;
+
+
+    pPortMAC = (BYTE*) &pLCSPORT->MAC_Address;
+    pIFaceMAC = pPortMAC;
+
+    /* Not all systems can return the hardware address of an interface. */
+#if defined(SIOCGIFHWADDR)
+
+    while (1)
+    {
+        fd = socket( AF_INET, SOCK_STREAM, IPPROTO_IP );
+
+        if (fd == -1)
+        {
+            // "CTC: error in function %s: %s"
+            rc = HSO_errno;
+            WRMSG( HHC00940, "E", "socket()", strerror( rc ) );
+            success = FALSE;
+            break;
+        }
+
+        memset( &ifr, 0, sizeof( ifr ) );
+        STRLCPY( ifr.ifr_name, pLCSPORT->szNetIfName );
+
+        rc = TUNTAP_IOCtl( fd, SIOCGIFHWADDR, (char*)&ifr );
+
+        close( fd );
+
+        if (rc != 0)
+        {
+            // "CTC: ioctl %s failed for device %s: %s"
+            rc = HSO_errno;
+            WRMSG( HHC00941, "E", "SIOCGIFHWADDR", pLCSPORT->szNetIfName, strerror( rc ) );
+            success = FALSE;
+            break;
+        }
+
+        pIFaceMAC  = (BYTE*) ifr.ifr_hwaddr.sa_data;
+        rc = 0;
+        success = TRUE;
+        break;
+    }
+
+#else // !defined(SIOCGIFHWADDR)
+
+    rc = 0;
+    success = TRUE;
+
+#endif // defined(SIOCGIFHWADDR)
+
+    if (success)
+    {
+        /* Report what MAC address we will really be using */
+        // "CTC: lcs interface '%s' using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+        WRMSG( HHC00942, "I", pLCSPORT->szNetIfName, *(pIFaceMAC+0),*(pIFaceMAC+1),
+                          *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
+
+        /* Issue warning if different from specified value */
+        if (memcmp( pPortMAC, pIFaceMAC, IFHWADDRLEN ) != 0)
+        {
+            if (pLCSPORT->fLocalMAC)
+            {
+                // "CTC: lcs interface %s not using mac %2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X"
+                WRMSG( HHC00943, "W", pLCSPORT->szNetIfName, *(pPortMAC+0),*(pPortMAC+1),
+                                 *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
+            }
+
+            memcpy( pPortMAC, pIFaceMAC, IFHWADDRLEN );
+
+            snprintf(pLCSPORT->szMACAddress, sizeof(pLCSPORT->szMACAddress),
+                "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X", *(pPortMAC+0), *(pPortMAC+1),
+                *(pPortMAC+2), *(pPortMAC+3), *(pPortMAC+4), *(pPortMAC+5));
+        }
+    }
+
 }
 
 // ====================================================================
