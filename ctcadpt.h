@@ -70,6 +70,10 @@ struct  _LCSIPMPAIR;        // LCS IP Multicast Pair structure
 struct  _LCSIPMFRM;         // LCS Set IP Multicast Command Frame
 struct  _LCSETHFRM;         // LCS Ethernet Passthru Frame
 struct  _LCSATTN;           // LCS Attention Required
+struct  _LCSOCTL;           // LCS SNA Outbound Control
+struct  _LCSICTL;           // LCS SNA Inbound Control
+struct  _LCSBAF1;           // LCS SNA baffle 1
+struct  _LCSBAF2;           // LCS SNA baffle 2
 
 typedef struct  _LCSBLK     LCSBLK,     *PLCSBLK;
 typedef struct  _LCSDEV     LCSDEV,     *PLCSDEV;
@@ -86,6 +90,10 @@ typedef struct  _LCSIPMPAIR LCSIPMPAIR, *PLCSIPMPAIR;
 typedef struct  _LCSIPMFRM  LCSIPMFRM,  *PLCSIPMFRM;
 typedef struct  _LCSETHFRM  LCSETHFRM,  *PLCSETHFRM;
 typedef struct  _LCSATTN    LCSATTN,    *PLCSATTN;
+typedef struct  _LCSOCTL    LCSOCTL,    *PLCSOCTL;
+typedef struct  _LCSICTL    LCSICTL,    *PLCSICTL;
+typedef struct  _LCSBAF1    LCSBAF1,    *PLCSBAF1;
+typedef struct  _LCSBAF2    LCSBAF2,    *PLCSBAF2;
 
 
 // --------------------------------------------------------------------
@@ -397,7 +405,212 @@ struct _CTCISEG                         // CTCI Segment Header
 \**********************************************************************/
 
 // --------------------------------------------------------------------
-// LCS Device                              (host byte order)
+// LCS SNA Outbound Control                     (network byte order)
+// Goes from the guest (i.e. VTAM) to the XCA (i.e. LCS)
+// --------------------------------------------------------------------
+
+struct _LCSOCTL                           // LCS SNA Outbound Control
+{
+    HWORD       XCNOBUFC;
+    BYTE        XCNOSTAT;
+#define  XCNOXIDF  0x80
+#define  XCNOERRF  0x40
+#define  XCNORSVD  0x20
+#define  XCNOSEGF  0x08
+#define  XCNOSGST  0x0C
+#define  XCNOSEGL  0x04
+#define  XCNOSLOW  0x02
+#define  XCNOMAXW  0x01
+    BYTE        XCNOFMT;
+    union _onp
+    {
+        HWORD   XCNONUMS;
+        HWORD   XCNOPGCT;
+    } np;
+    union _onh
+    {
+        HWORD   XCNONUMR;
+        HWORD   XCNOHDSZ;
+    } nh;
+} ATTRIBUTE_PACKED;
+
+
+// --------------------------------------------------------------------
+// LCS SNA Inbound Control                      (network byte order)
+// Goes from the XCA (i.e. LCS) to the guest (i.e. VTAM)
+// --------------------------------------------------------------------
+
+struct _LCSICTL                           // LCS SNA Inbound Control
+{
+    HWORD       XCNIBUFC;
+    BYTE        XCNISTAT;
+#define  XCNIXIDF  0x80
+#define  XCNIERRF  0x40
+#define  XCNIRSVD  0x08
+#define  XCNISLOW  0x02
+#define  XCNIMAXW  0x01
+    BYTE        XCNIFMT;
+    union _inp
+    {
+        HWORD   XCNINUMS;
+        HWORD   XCNIPGCT;
+    } np;
+    HWORD       XCNINUMR;
+} ATTRIBUTE_PACKED;
+
+
+// The first 8-bytes of the reply are copied to XCNCB + 2F8
+//  SNA Data Areas Volume 1, Cross-Channel Node Control Block (XCNCB)
+//
+//  The 8-byte control area that follows is an external
+//  interface to other devices connected to VTAM via a channel.
+//  Bits should not randomly be added to this structure. Also,
+//  bits added to the input structure (XCNICTL) should be
+//  duplicated in the output structure (XCNOCTL).
+//  ====================================================================================
+//  760 (2F8) CHARACTER  8 XCNICTL   INPUT CONTROL AREA
+//  760 (2F8) UNSIGNED   2 XCNIBUFC  Number of buffers received in
+//                                   last WRITE operation (unpacked
+//                                   format) or number of data
+//                                   bytes received in last WRITE
+//                                   operation (packed format)
+//  762 (2FA) BITSTRING  2 XCNISTAT  INPUT STATUS AREA - IF 0,
+//                                   NORMAL DATA TRANSFER HAS
+//                                   OCCURRED
+//            1... ....    XCNIXIDF  + XID TRANSFER (IF XCNIERRF IS      <<< ISTTSCXE tests
+//                                   ALSO ON, DISCONTACTING)
+//            .1.. ....    XCNIERRF  + ERROR RETRY OF LAST               <<<      "
+//                                   TRANSMISSION
+//            ..11 ....    *         NOT USED- AVAILABLE
+//            .... 1...    *         RESERVED                            <<<      "
+//            .... .1..    *         NOT USED - AVAILABLE
+//            .... ..1.    XCNISLOW  + SLOWDOWN - OUTPUT DATA HAS        <<<      "
+//                                   NOT BEEN RECEIVED
+//            .... ...1    XCNIMAXW  + THE NEXT TRANSMISSION             <<<      "
+//                                   REQUIRES THE MAXIMUM NUMBER OF
+//                                   BUFFERS AVAILABLE IN THIS SIDE
+//                                   OF THE ADAPTER
+//  763 (2FB) UNSIGNED   1 XCNIFMT   + CONTROL FORMAT (VALID ONLY
+//                                   DURING XID EXCHANGE)
+//  764 (2FC) SIGNED     2 XCNINUMS  INCREMENTAL COUNT OF NUMBER OF
+//                                   BUFFERS SENT (USED FOR DATA
+//                                   LINK CONTROL INTEGRITY)
+//  764 (2FC) SIGNED     2 XCNIPGCT  DURING XID EXCHANGE, THIS
+//                                   FIELD WILL REPRESENT THE
+//                                   NUMBER OF PAGES TO BE
+//                                   ALLOCATED FOR THE CTC BUFFER.
+//                                   AFTER XID IS COMPLETE, IT WILL
+//                                   BE CLEARED FOR BEGINNING DATA
+//                                   TRANSFER
+//  766 (2FE) SIGNED     2 XCNINUMR  INCREMENTAL COUNT OF NUMBER OF
+//                                   BUFFERS RECEIVED (USED FOR
+//                                   DATA LINK CONTROL INTEGRITY)
+//
+//
+//  The 8-byte control area that follows is an external
+//  interface to other devices connected to VTAM via a channel.
+//  See XCNICTL for additional information.
+//  ====================================================================================
+//  768 (300) CHARACTER  8 XCNOCTL   OUTPUT CONTROL AREA
+//  768 (300) UNSIGNED   2 XCNOBUFC  Number of buffers transmitted
+//                                   in last WRITE operation when
+//                                   unpacked format is used (the
+//                                   number of READ buffers which
+//                                   will be used by the other side
+//                                   of the adapter), or number of
+//                                   data bytes transmitted in last
+//                                   WRITE operation when packed
+//                                   format is used
+//  770 (302) BITSTRING  2 XCNOSTAT  OUTPUT STATUS AREA - IF 0,
+//                                   NORMAL DATA TRANSFER WILL
+//                                   OCCUR
+//            1... ....    XCNOXIDF  + XID TRANSFER (IF XCNOERRF IS
+//                                   ALSO ON, DISCONTACTING)
+//            .1.. ....    XCNOERRF  + ERROR RETRY OF LAST
+//                                   TRANSMISSION
+//            ..1. ....    *         RESERVED
+//            ...1 ....    *         NOT USED - AVAILABLE
+//            .... 11..    XCNOSGST  OUTPUT SEGMENTATION STATE
+//            .... 1...    XCNOSEGF  FIRST SEGMENT
+//            .... .1..    XCNOSEGL  LAST SEGMENT
+//            .... ..1.    XCNOSLOW  + SLOWDOWN - INPUT DATA HAS
+//                                   NOT BEEN RECEIVED
+//            .... ...1    XCNOMAXW  + THE NEXT TRANSMISSION
+//                                   REQUIRES THE MAXIMUM NUMBER OF
+//                                   BUFFERS AVAILABLE IN THE OTHER
+//                                   SIDE OF THE ADAPTER
+//  771 (303) UNSIGNED   1 XCNOFMT   + CONTROL FORMAT (VALID ONLY
+//                                   DURING XID EXCHANGE)
+//  772 (304) SIGNED     2 XCNONUMS  INCREMENTAL COUNT OF NUMBER OF
+//                                   BUFFERS SENT (USED FOR DATA
+//                                   LINK CONTROL INTEGRITY)
+//  772 (304) SIGNED     2 XCNOPGCT  DURING XID EXCHANGE, THIS
+//                                   FIELD WILL REPRESENT THE
+//                                   NUMBER OF PAGES TO BE
+//                                   ALLOCATED FOR THE CTC BUFFER.
+//                                   AFTER XID IS COMPLETE, IT WILL
+//                                   BE CLEARED FOR BEGINNING DATA
+//                                   TRANSFER
+//  774 (306) SIGNED     2 XCNONUMR  INCREMENTAL COUNT OF NUMBER OF
+//                                   BUFFERS RECEIVED (USED FOR
+//                                   DATA LINK CONTROL INTEGRITY)
+//  774 (306) SIGNED     2 XCNOHDSZ  DURING XID EXCHANGE, THIS
+//                                   FIELD WILL REPRESENT THE SIZE
+//                                   OF THE SMS HEADER IN USE BY
+//                                   THIS HOST. AFTER XID IS
+//                                   COMPLETE, IT WILL BE CLEARED
+//                                   FOR DATA TRANSFER
+//
+
+
+// --------------------------------------------------------------------
+// - baffle 1 and baffle 2 are always seen together.
+// - baffle 1 seems to have a minimum length of 12 bytes, but is often
+//   longer, with a maximum seen length of 34 bytes. Seen length has
+//   always been a even number.
+// - baffle 2 seems to have a minimum length of 3 bytes, but is often
+//   longer, with a maximum seen length of 44 bytes.
+// - The seen total length of baffle 1 and baffle 2 has always been an
+//   even number, a multiple of 2.
+// --------------------------------------------------------------------
+
+
+// --------------------------------------------------------------------
+// LCS SNA baffle 1                             (network byte order)
+// --------------------------------------------------------------------
+
+struct _LCSBAF1                        // LCS SNA baffle 1
+{
+    HWORD       LenBaf1;               // Length of baffle 1
+    BYTE        unknown2;              // Always seems to contain 0x0C
+                                       // with WCTL, and always seems
+                                       // to contain 0xCC with SCB.
+    BYTE        unknown3;              // Always seems to contain the
+                                       // same value on WCTL/SCB pair.
+                                       // Seen 0x99 and 0x0D on activate,
+                                       // 0x0E and 0x98 on inactivate.
+    HWORD       LenBaf2;               // Length of baffle 2
+    BYTE        unknown6;              // Always seems to contain the
+                                       // same value on WCTL/SCB pair.
+                                       // Seen 0xC0 and 0x60 on activate,
+                                       // 0x60 and 0xC0 on inactivate.
+    BYTE        unknown7[5];
+} ATTRIBUTE_PACKED;
+
+
+// --------------------------------------------------------------------
+// LCS SNA baffle 2                             (network byte order)
+// --------------------------------------------------------------------
+
+struct _LCSBAF2                        // LCS SNA baffle 2
+{
+    BYTE        unknown0;              // Always seems to contain 0x01.
+    HWORD       SeqNum;                // Sequence number
+} ATTRIBUTE_PACKED;
+
+
+// --------------------------------------------------------------------
+// LCS Device                                   (host byte order)
 // --------------------------------------------------------------------
 
 struct  _LCSDEV
@@ -414,7 +627,7 @@ struct  _LCSDEV
     BYTE        bType;                  // (see below #defines)
     char*       pszIPAddress;           // IP Address (string)
 
-    U32         lIPAddress;             // IP Address (binary),
+    U32         lIPAddress;             // IP Address (binary)
                                         // (network byte order)
 
     LOCK        DevDataLock;            // Data LOCK
@@ -428,7 +641,21 @@ struct  _LCSDEV
     u_int       fDataPending:1;         // Data is Pending
     u_int       fReadWaiting:1;         // LCS_Read waiting
     u_int       fHaltOrClear:1;         // HSCH or CSCH issued
-    u_int       fPendingBaffle:1;       // Pending has Baffle structure
+
+    U16         hwOctlSize;             // SNA
+    LCSOCTL     Octl;                   // SNA Outbound Control
+                                        // (network byte order)
+    U16         hwIctlSize;             // SNA
+    LCSICTL     Ictl;                   // SNA Inbound Control
+                                        // (network byte order)
+
+    U32         bFlipFlopCount;         // SNA
+    BYTE        bFlipFlop;              // SNA
+    BYTE        bBaffleType;            // SNA LCSBAF1 type
+    U16         hwBaffleSeqNum;         // SNA LCSBAF2 sequence number
+    u_int       fChanProgActive:1;      // SNA Channel Program Active
+    u_int       fAttnRequired:1;        // SNA Attention Required
+    u_int       fPendingIctl:1;         // SNA Pending has LCSICTL structure
 
     U16         iFrameOffset;           // Curr Offset into Buffer
     U16         iMaxFrameBufferSize;    // Device Buffer Size
@@ -449,8 +676,11 @@ struct  _LCSDEV
 #define LCSDEV_TYPE_SECONDARY   0x02
 
 
+#define  WCTL  0x17          // Write Control
+#define  SCB   0x14          // Sense Command Byte
+
 // --------------------------------------------------------------------
-// LCS Port (or Relative Adapter)         (host byte order)
+// LCS Port (or Relative Adapter)               (host byte order)
 // --------------------------------------------------------------------
 
 struct  _LCSPORT
@@ -502,7 +732,7 @@ struct  _LCSPORT
 
 
 // --------------------------------------------------------------------
-// LCSRTE - Routing Entries               (host byte order)
+// LCSRTE - Routing Entries                     (host byte order)
 // --------------------------------------------------------------------
 
 struct  _LCSRTE
@@ -514,7 +744,7 @@ struct  _LCSRTE
 
 
 // --------------------------------------------------------------------
-// LCS Attention Required                      (host byte order)
+// LCS Attention Required                       (host byte order)
 // --------------------------------------------------------------------
 
 struct _LCSATTN                           // LCS Attention Required
@@ -525,7 +755,7 @@ struct _LCSATTN                           // LCS Attention Required
 
 
 // --------------------------------------------------------------------
-// LCSBLK - Common Storage for LCS Emulation   (host byte order)
+// LCSBLK - Common Storage for LCS Emulation    (host byte order)
 // --------------------------------------------------------------------
 
 struct  _LCSBLK
@@ -680,13 +910,13 @@ struct  _LCSQIPFRM
 // LCS LAN Statistics Command Frames            (network byte order)
 // --------------------------------------------------------------------
 
-struct  _LCSLSTFRM
+struct  _LCSLSTFRM                      // LAN Statistics for IP
 {
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
     BYTE        _unused1[10];           //  +C
     MAC         MAC_Address;            // +16  MAC Address of Adapter
-    FWORD       fwPacketsDeblocked;     // +1C_
+    FWORD       fwPacketsDeblocked;     // +1C
     FWORD       fwPacketsBlocked;       // +20
     FWORD       fwTX_Packets;           // +24
     FWORD       fwTX_Errors;            // +28
@@ -697,7 +927,7 @@ struct  _LCSLSTFRM
     U32         fwRX_DiscardedTooLarge; // +3C
 } ATTRIBUTE_PACKED;                     // +40
 
-struct  _LCSLSSFRM
+struct  _LCSLSSFRM                      // LAN Statistics for SNA
 {
     LCSCMDHDR   bLCSCmdHdr;             //  +0  LCS Command Frame header
 
@@ -707,8 +937,9 @@ struct  _LCSLSSFRM
                                         //      of the structures.
     BYTE        bUnknown2;              //  +D
     BYTE        bUnknown3;              //  +E
-    BYTE        _unused1[3];            //  +F
-    BYTE        bUnknown7;              // +12  Probably length of MAC Address.
+    BYTE        bUnknown4;              //  +F
+    BYTE        _unused1[2];            // +10
+    BYTE        bMACsize;               // +12  Length of MAC Address.
     MAC         MAC_Address;            // +13  MAC Address.
     BYTE        _unused2[1];            // +19
 } ATTRIBUTE_PACKED;                     // +1A
