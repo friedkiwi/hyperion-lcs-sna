@@ -112,7 +112,7 @@ static int      LCS_DoEnqueueReplyFrame ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, si
 static void     LCS_StartLan_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 static void     LCS_StopLan_SNA   ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 static void     LCS_LanStats_SNA  ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
-static void     LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
+static void     LCS_UnsuppCmd_SNA ( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen );
 
 static void     LCS_EnqueueReply_SNA     ( PLCSDEV pLCSDEV, PLCSCMDHDR pReply, size_t iSize );
 static void     LCS_EnqueueBaffle_SNA    ( PLCSDEV pLCSDEV, PLCSHDR pBaffleIn, size_t iSize );
@@ -711,7 +711,6 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
             // For SNA this the first CCW in the chain
             // Write Control (0x17), Write (0x01), Read (0x02).
             pLCSDEV->bFlipFlop = bCode;
-            pLCSDEV->bFlipFlopCount++;
         }
 
         *pUnitStat = CSW_CE | CSW_DE;
@@ -728,7 +727,6 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
             // Sense Command Byte (0x14), Write (0x01), Read (0x02).
             // The SCB does not expect any input.
             pLCSDEV->bFlipFlop = bCode;
-            pLCSDEV->bFlipFlopCount++;
         }
 
         *pUnitStat = CSW_CE | CSW_DE;
@@ -745,8 +743,8 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
     case 0x43:  // 00XXX011  SBM
         // -----------------------------------------------------------
         // SET BASIC MODE
-        // Also called Enable Compatability Mode (ECM) by SNA, and
-        // is the last CCW issued after the XCA is inactivated.
+        // Also called Enable Compatability Mode (ECM) by SNA,
+        // ECM is the last CCW issued after the XCA is inactivated.
         // -----------------------------------------------------------
 
         // Command reject if in basic mode
@@ -769,8 +767,8 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
     case 0xC3:  // 11000011  SEM
         // -----------------------------------------------------------
         // SET EXTENDED MODE
-        // Also called Disable Compatability Mode (DCM) by SNA, and
-        // is the first CCW issued after the XCA is activated.
+        // Also called Disable Compatability Mode (DCM) by SNA.
+        // DCM is the first CCW issued after the XCA is activated.
         // -----------------------------------------------------------
 
         if (pLCSDEV->bMode == LCSDEV_MODE_SNA)
@@ -782,11 +780,10 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
             pLCSDEV->iFrameOffset  = 0;
             pLCSDEV->fReplyPending = 0;
             pLCSDEV->fDataPending  = 0;
-            pLCSDEV->fPendingIctl = 0;
+            pLCSDEV->fPendingIctl  = 0;
             PTT_DEBUG(        "REL  DevDataLock  ", 000, pDEVBLK->devnum, -1 );
             release_lock( &pLCSDEV->DevDataLock );
             pLCSDEV->bFlipFlop = 0;
-            pLCSDEV->bFlipFlopCount = 0;
         }
 
         pDEVBLK->ctcxmode = 1;
@@ -1200,6 +1197,48 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
                  BYTE*   pIOBuf,    BYTE* pUnitStat,
                  U32*    pResidual )
 {
+
+static const BYTE Baffle_0xCC99_Inbound[50] =
+                 {
+                   0x00, 0x32, 0x04, 0x00,                           /* LCSHDR  */
+                   0x00, 0x18, 0xCC, 0x99, 0x00, 0x15, 0xC0, 0x00,   /* LCSBAF1 */
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x20, 0x1E, 0x00, 0x00, 0x00, 0x00,
+                   0x01, 0xFF, 0xFF, 0x00, 0x00, 0x03, 0x00, 0x00,   /* LCSBAF2 */
+                   0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+                   0x00, 0x05, 0xD5, 0x00, 0x00, 0x00
+                 };
+
+static const BYTE Baffle_0xCC0D_Inbound[56] =
+                 {
+                   0x00, 0x38, 0x04, 0x00,                           /* LCSHDR  */
+                   0x00, 0x2C, 0xCC, 0x0D, 0x00, 0x07, 0x60, 0x03,   /* LCSBAF1 */
+                   0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x40, 0x00, 0x00, 0xDC, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00,
+                   0x01, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF    /* LCSBAF2 */
+                 };
+
+static const BYTE Baffle_0xCC0E_Inbound[32] =
+                 {
+                   0x00, 0x20, 0x04, 0x00,                           /* LCSHDR  */
+                   0x00, 0x18, 0xCC, 0x0E, 0x00, 0x03, 0x60, 0x03,   /* LCSBAF1 */
+                   0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x01, 0xFF, 0xFF, 0x9C,                           /* LCSBAF2 */
+                 };
+
+static const BYTE Baffle_0xCC98_Inbound[32] =
+                 {
+                   0x00, 0x20, 0x04, 0x00,                           /* LCSHDR  */
+                   0x00, 0x18, 0xCC, 0x98, 0x00, 0x03, 0xC0, 0x00,   /* LCSBAF1 */
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x01, 0xFF, 0xFF, 0x04,                           /* LCSBAF2 */
+                 };
+
     PLCSDEV     pLCSDEV      = (PLCSDEV) pDEVBLK->dev_data;
     PLCSBLK     pLCSBLK      = pLCSDEV->pLCSBLK;
     PLCSPORT    pLCSPORT     = &pLCSBLK->Port[ pLCSDEV->bPort ];
@@ -1208,21 +1247,28 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     PLCSETHFRM  pLCSEthFrame = NULL;
     PETHFRM     pEthFrame    = NULL;
     PLCSICTL    pLCSICTL     = NULL;
+    PLCSBAF1    pLCSBAF1     = NULL;
+    PLCSBAF2    pLCSBAF2     = NULL;
+    BYTE*       pIOBufStart  = NULL;
+    BYTE*       pIOBufEnd    = NULL;
+    BYTE*       pBaffleMAC;
     U16         iOffset      = 0;
     U16         iPrevOffset  = 0;
     U16         iLength      = 0;
     U16         iEthLen      = 0;
-    int         nEthFrames   = 0;
-    int         nEthBytes    = 0;
-    BYTE*       pIOBufStart  = NULL;
-    BYTE*       pIOBufCurr   = NULL;
-    BYTE*       pIOBufEnd    = NULL;
-    int         iTraceLen;
-    char        buf[32];
-    char        cPktType[16];
+    U16         hwLenBaf1;
+//  U16         hwLenBaf2;
     U16         hwEthernetType;
     BYTE        bHas8022;
     BYTE        bHas8022Snap;
+    int         nEthFrames   = 0;
+    int         nEthBytes    = 0;
+    int         iTraceLen;
+    int         iBaffleInLen;
+    char        BaffleIn[64];
+    char        buf[32];
+    char        cPktType[16];
+
 
     // Display up to 256-bytes of the data coming from the guest, if debug is active
     if (pLCSBLK->fDebug)
@@ -1244,7 +1290,6 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
 
     PTT_DEBUG( "WRIT ENTRY        ", 000, pDEVBLK->devnum, -1 );
     PTT_TIMING( "beg write", 0, 0, 0 );
-    LCS_BegMWrite( pDEVBLK ); // (performance)
 
     // ----------------------------------------------------------------
     //    LCS_Write for IP mode
@@ -1252,6 +1297,7 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     //
     // IP mode handles Ethernet frames and LCS commands, both of which
     // are prefixed with a 4-byte LCSHDR.
+    //
     // The following illustrates an Ethernet frame containing an IPv4
     // packet with an ICMP Ping reply:-
     //   HHC00979D LCS: data: +0000< 00660100 02000042 22800200 00422281  .f......".....". ...../...../...a
@@ -1261,14 +1307,22 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     //   HHC00979D LCS: data: +0040< 12131415 16171819 1A1B1C1D 1E1F2021  .............. ! ................
     //   HHC00979D LCS: data: +0050< 22232425 26272829 2A2B2C2D 2E2F3031  "#$%&'()*+,-./01 ................
     //   HHC00979D LCS: data: +0060< 32333435 36370000                    234567..         ........
+    // The first four bytes are the LCSHDR, the next fourteen bytes are
+    // the Ethernet header, and the remaining bytes are the IP packet
+    // with the ICMP Ping reply.
+    //
     // The following illustrates an LCS Command frame containing a Start
     // LAN command:-
     //   HHC00979D LCS: data: +0000< 001D0000 01000000 00000100 00000000  ................ ................
     //   HHC00979D LCS: data: +0010< 00000000 00000000 00000000 000000    ...............  ...............
+    // The first four bytes are the LCSHDR, the remaining bytes are the
+    // Start LAN command.
     //
 
     if (pLCSDEV->bMode == LCSDEV_MODE_IP)
     {
+
+        LCS_BegMWrite( pDEVBLK ); // (performance)
 
         while (1)
 
@@ -1496,6 +1550,8 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
 
         } // end while (1) for IP
 
+        LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames ); // (performance)
+
     }
 
     // ----------------------------------------------------------------
@@ -1509,22 +1565,10 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     // an SNA Start LAN command:-
     //   HHC00979D LCS: data: +0000< 00160000 41000000 00000000 00000000  ....A........... ................
     //   HHC00979D LCS: data: +0010< 00000000 00000000                    ........         ........
+    // The first four bytes are the LCSHDR, the remaining bytes are the
+    // SNA Start LAN command.
     //
-    // After that uncertainty reigns! So far there have only been two more
-    // things sent from VTAM, the first is this:-
-    //   HHC00979D LCS: data: +0000< 00160000 00000000 00140400 000C0C99  ................ ...............r
-    //   HHC00979D LCS: data: +0010< 0003C000 00000000 01000000 0000      ..............   ..{...........
-    // and 30 seconds later is this:-
-    //   HHC00979D LCS: data: +0000< 00160000 00000000 00140000 42000002  ............B... ................
-    //   HHC00979D LCS: data: +0010< 00000000 00000000 00000000 0000      ..............   ..............
-    //
-    // Are the first 8-bytes a structure, with the first 2-bytes of the
-    // containing the length of whatever follows the structure? Yes!
-    // Are the bytes following the structure an LCSHDR with, in the first
-    // instance, some kind of SNA data, and, in the second instance, an
-    // SNA Stop LAN command? Yes!
-    // Are the 0x0016 and 0x0014 just coincidence? No!
-    // We need a trace of real hardware!
+    // After that uncertainty reigns!
     //
     // When the 8-byte structure is in a reply to VTAM the 8-bytes are
     // copied to an XCNCB, and various bits in the third byte are tested.
@@ -1533,158 +1577,31 @@ void  LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
     else  //  (pLCSDEV->bMode == LCSDEV_MODE_SNA)
     {
 
-static const BYTE Baffle_0x99_Inbound[50] =
-                 {
-                   0x00, 0x32, 0x04, 0x00,                           /* LCSHDR  */
-                   0x00, 0x18, 0xCC, 0x99, 0x00, 0x15, 0xC0, 0x00,   /* LCSBAF1 */
-                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x20, 0x1E, 0x00, 0x00, 0x00, 0x00,
-                   0x01, 0xFF, 0xFF, 0x00, 0x00, 0x03, 0x00, 0x00,   /* LCSBAF2 */
-                   0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
-                   0x00, 0x05, 0xD5, 0x00, 0x00, 0x00
-                 };
-
-static const BYTE Baffle_0x0D_Inbound[56] =
-                 {
-                   0x00, 0x38, 0x04, 0x00,                           /* LCSHDR  */
-                   0x00, 0x2C, 0xCC, 0x0D, 0x00, 0x07, 0x60, 0x03,   /* LCSBAF1 */
-                   0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x40, 0x00, 0x00, 0xDC, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x00, 0x00,
-                   0x01, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF    /* LCSBAF2 */
-                 };
-
-static const BYTE Baffle_0x0E_Inbound[32] =
-                 {
-                   0x00, 0x20, 0x04, 0x00,                           /* LCSHDR  */
-                   0x00, 0x18, 0xCC, 0x0E, 0x00, 0x03, 0x60, 0x03,   /* LCSBAF1 */
-                   0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x01, 0xFF, 0xFF, 0x9C,                           /* LCSBAF2 */
-                 };
-
-static const BYTE Baffle_0x98_Inbound[32] =
-                 {
-                   0x00, 0x20, 0x04, 0x00,                           /* LCSHDR  */
-                   0x00, 0x18, 0xCC, 0x98, 0x00, 0x03, 0xC0, 0x00,   /* LCSBAF1 */
-                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
-                   0x01, 0xFF, 0xFF, 0x04,                           /* LCSBAF2 */
-                 };
-
-    char        BaffleIn[64];
-    int         iBaffleInLen;
-    char*       pBaffleMAC;
-
-    PLCSHDR     pLCSHDR      = NULL;
-    PLCSBAF1    pLCSBAF1     = NULL;
-    PLCSBAF2    pLCSBAF2     = NULL;
-    U16         hwLenBaf1;
-//  U16         hwLenBaf2;
-    U16         hwSeqNum;
-
-
+        // Check whether the Write CCW is part of a three CCW channel
+        // program. This is the normal state after the Start LAN and
+        // LAN Stats commands have been responded to.
         if (pLCSDEV->bFlipFlop)
         {
+
+            // The Write CCW is the second of three CCW's in the channel
+            // program. The channel program contains either a) Control
+            // (0x17), Write (0x01) and Read (0x02) CCW's, or b) Sense
+            // Command Byte (0x14), Write (0x01) and Read (0x02) CCW's.
+            // The first, or only, 8-bytes of the Write data are an LCSOCTL.
+
+            // Prepare the ICTL
             pLCSDEV->hwIctlSize = sizeof(LCSICTL);
             memset(&pLCSDEV->Ictl, 0, sizeof(LCSICTL));
             pLCSICTL = &pLCSDEV->Ictl;
             pLCSICTL->XCNISTAT = XCNIRSVD;
+            // Copy the OCTL that has just arrived
             pLCSDEV->hwOctlSize = sizeof(LCSOCTL);
             memcpy(&pLCSDEV->Octl, pIOBuf, sizeof(LCSOCTL));
+            // Point to whatever follows the OCTL
             pIOBufStart = &pIOBuf[sizeof(LCSOCTL)];
-        }
-        else
-        {
-            pLCSDEV->hwIctlSize = 0;
-            memset(&pLCSDEV->Ictl, 0, sizeof(LCSICTL));
-            pLCSDEV->hwOctlSize = 0;
-            memset(&pLCSDEV->Octl, 0, sizeof(LCSOCTL));
-            pIOBufStart = pIOBuf;
-        }
-        pIOBufCurr = pIOBufStart;
-        pIOBufEnd = pIOBuf + sCount;
+            pIOBufEnd = pIOBuf + sCount;
 
-
-        if (pLCSDEV->bFlipFlop && sCount <= sizeof(LCSICTL))
-        {
-
-            // The output is an ICTL and nothing else
-
-            PTT_DEBUG( "WRIT: OCTL only   ", -1, pDEVBLK->devnum, -1 );
-
-            // Trace received OCTL...
-            if (pLCSBLK->fDebug)
-            {
-                {                                                                          /* FixMe! Remove! */
-                    char    tmp[256];
-                    snprintf( (char*)tmp, 256, "lcs OCTL only received" );
-                    // HHC03983 "%1d:%04X %s: %s"
-                    WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS", tmp );
-                }                                                                          /* FixMe! Remove! */
-            }
-
-            if (pLCSDEV->bFlipFlop == WCTL)
-            {
-                LCS_EnqueueBaffle_SNA( pLCSDEV, NULL, 0 );
-            }
-            else  // pLCSDEV->bFlipFlop == SCB
-            {
-                memset(BaffleIn, 0, sizeof(BaffleIn));
-                if (pLCSDEV->bBaffleType == 0x99 )
-                {
-                    memcpy(BaffleIn, Baffle_0x99_Inbound, 50 );
-                    iBaffleInLen = 50;
-                }
-                else if (pLCSDEV->bBaffleType == 0x0D )
-                {
-                    memcpy(BaffleIn, Baffle_0x0D_Inbound, 56 );
-                    iBaffleInLen = 56;
-                }
-                else if (pLCSDEV->bBaffleType == 0x0E )
-                {
-                    memcpy(BaffleIn, Baffle_0x0E_Inbound, 32 );
-                    iBaffleInLen = 32;
-                }
-                else if (pLCSDEV->bBaffleType == 0x98 )
-                {
-                    memcpy(BaffleIn, Baffle_0x98_Inbound, 32 );
-                    iBaffleInLen = 32;
-                }
-                else
-                {
-                    iBaffleInLen = 0;
-                }
-                if (iBaffleInLen)
-                {
-                    pLCSHDR = (PLCSHDR)&BaffleIn;
-                    pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
-                    FETCH_HW( hwLenBaf1, pLCSBAF1->LenBaf1 );
-//                  FETCH_HW( hwLenBaf2, pLCSBAF1->LenBaf2 );
-                    pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
-                    STORE_HW( pLCSBAF2->SeqNum, pLCSDEV->hwBaffleSeqNum );
-                    if (pLCSDEV->bBaffleType == 0x99 )
-                    {
-                        // pLCSBAF2 will be pointing to:-
-                        //  01FFFF00 00030000 06FFFFFF FFFFFF00 0005D500 0000
-                        pBaffleMAC = (char*)pLCSBAF2;
-                        pBaffleMAC += 9;
-                        memcpy( pBaffleMAC, pLCSPORT->MAC_Address, IFHWADDRLEN );
-#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
-                        pBaffleMAC[5]++;
-#endif
-                    }
-                }
-                LCS_EnqueueBaffle_SNA( pLCSDEV, (PLCSHDR)&BaffleIn, iBaffleInLen );
-            }
-
-        }
-        else
-        {
-
-            if (pLCSDEV->bFlipFlop)
+            if (sCount > sizeof(LCSOCTL))
             {
 
                 // The output is an OCTL followed by data
@@ -1693,35 +1610,27 @@ static const BYTE Baffle_0x98_Inbound[32] =
 
                 // Trace received command frame...
                 if (pLCSBLK->fDebug)
-                {
-                    {                                                                          /* FixMe! Remove! */
-                        char    tmp[256];
-                        snprintf( (char*)tmp, 256, "lcs OCTL and data received" );
-                        // HHC03983 "%1d:%04X %s: %s"
-                        WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS", tmp );
-                    }                                                                          /* FixMe! Remove! */
-                }
+                {                                                                          /* FixMe! Remove! */
+                    // HHC03983 "%1d:%04X %s: %s"
+                    WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+                                                                 "lcs OCTL and data received" );
+                }                                                                          /* FixMe! Remove! */
 
-            }
-
-
-            if (pLCSDEV->bFlipFlop == WCTL || pLCSDEV->bFlipFlop == 0)
-            {
                 while (1)
                 {
-                    // Fix-up the LCS header pointer to the current frame
-                    pIOBufCurr = pIOBufStart + iOffset;
-                    pLCSHDR = (PLCSHDR)pIOBufCurr;
-
-                    // Save current offset so we can tell how big next frame is
+                    // Save current offset so we can tell how big the next frame is.
                     iPrevOffset = iOffset;
 
-                    // Get the next frame offset, exit loop if 0
-                    if ((int)(pIOBufEnd - pIOBufCurr) < (int)sizeof(pLCSHDR->hwOffset))
+                    // Point to where the LCSHDR at the start of the next frame should be.
+                    pLCSHDR = (PLCSHDR)( pIOBufStart + iOffset );
+
+                    // Check that there is enough of the LCSHDR to contain the next
+                    // frame offset, exit the loop if there isn't.
+                    if ((int)(pIOBufEnd - (BYTE*)pLCSHDR) < (int)sizeof(pLCSHDR->hwOffset))
                         break;
 
+                    // Get the next frame offset, exit the loop if zero.
                     FETCH_HW( iOffset, pLCSHDR->hwOffset );
-
                     if (iOffset == 0)   // ("EOF")
                         break;
 
@@ -1730,94 +1639,90 @@ static const BYTE Baffle_0x98_Inbound[32] =
 
                     switch (pLCSHDR->bType)
                     {
-                    case LCS_FRMTYP_ENET:   // Ethernet Passthru
+//??                      case LCS_FRMTYP_ENET:   // 0x01: Ethernet Passthru
+//??
+//??                          PTT_DEBUG( "WRIT: Eth frame   ", 000, pDEVBLK->devnum, -1 );
+//??
+//??                          pLCSEthFrame = (PLCSETHFRM) pLCSHDR;
+//??                          pEthFrame    = (PETHFRM) pLCSEthFrame->bData;
+//??                          iEthLen      = iLength - sizeof(LCSETHFRM);
+//??
+//??                          // Fill in LCS source MAC address if not specified by guest program
+//??                          if (memcmp( pEthFrame->bSrcMAC, zeromac, sizeof( MAC )) == 0)
+//??                          {
+//??                              memcpy( pEthFrame->bSrcMAC, pLCSPORT->MAC_Address, sizeof( MAC ));
+//??  #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
+//??                              pEthFrame->bSrcMAC[5]++;    /* Get next MAC address */
+//??  #endif
+//??                          }
+//??
+//??                          // Trace Ethernet frame before sending to TAP device
+//??                          if (pLCSBLK->fDebug)
+//??                          {
+//??                              // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+//??                              WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+//??                                                   pLCSHDR->bSlot, iEthLen, cPktType,
+//??                                                   pLCSPORT->szNetIfName );
+//??                              iTraceLen = iEthLen;
+//??                              if (iTraceLen > MAX_TRACE_LEN)
+//??                              {
+//??                                  iTraceLen = MAX_TRACE_LEN;
+//??                                  // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+//??                                  WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+//??                                                       iTraceLen, (iEthLen - iTraceLen) );
+//??                              }
+//??                              net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
+//??                          }
+//??
+//??                          // Write the Ethernet frame to the TAP device
+//??                          nEthBytes += iEthLen;
+//??                          nEthFrames++;
+//??                          PTT_DEBUG( "WRIT: writing...  ", 000, pDEVBLK->devnum, -1 );
+//??                          PTT_TIMING( "b4 write", 0, iEthLen, 1 );
+//??                          if (TUNTAP_Write( pDEVBLK->fd, (BYTE*) pEthFrame, iEthLen ) != iEthLen)
+//??                          {
+//??                              PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
+//??                              // "%1d:%04X CTC: error writing to file %s: %s"
+//??                              WRMSG( HHC00936, "E",
+//??                                      SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->filename,
+//??                                      strerror( errno ) );
+//??                              pDEVBLK->sense[0] = SENSE_EC;
+//??                              *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
+//??            //?? ??           LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
+//??                              PTT_DEBUG( "WRIT EXIT         ", 000, pDEVBLK->devnum, -1 );
+//??                              return;
+//??                          }
+//??                          PTT_TIMING( "af write", 0, iEthLen, 1 );
+//??                          break;
 
-                        PTT_DEBUG( "WRIT: Eth frame   ", 000, pDEVBLK->devnum, -1 );
-
-                        pLCSEthFrame = (PLCSETHFRM) pLCSHDR;
-                        pEthFrame    = (PETHFRM) pLCSEthFrame->bData;
-                        iEthLen      = iLength - sizeof(LCSETHFRM);
-
-                        // Fill in LCS source MAC address if not specified by guest program
-                        if (memcmp( pEthFrame->bSrcMAC, zeromac, sizeof( MAC )) == 0)
-                        {
-                            memcpy( pEthFrame->bSrcMAC, pLCSPORT->MAC_Address, sizeof( MAC ));
-#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
-                            pEthFrame->bSrcMAC[5]++;    /* Get next MAC address */
-#endif
-                        }
-
-                        // Trace Ethernet frame before sending to TAP device
-                        if (pLCSBLK->fDebug)
-                        {
-                            // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
-                            WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
-                                                 pLCSHDR->bSlot, iEthLen, cPktType,
-                                                 pLCSPORT->szNetIfName );
-                            iTraceLen = iEthLen;
-                            if (iTraceLen > MAX_TRACE_LEN)
-                            {
-                                iTraceLen = MAX_TRACE_LEN;
-                                // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
-                                WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
-                                                     iTraceLen, (iEthLen - iTraceLen) );
-                            }
-                            net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
-                        }
-
-                        // Write the Ethernet frame to the TAP device
-                        nEthBytes += iEthLen;
-                        nEthFrames++;
-                        PTT_DEBUG( "WRIT: writing...  ", 000, pDEVBLK->devnum, -1 );
-                        PTT_TIMING( "b4 write", 0, iEthLen, 1 );
-                        if (TUNTAP_Write( pDEVBLK->fd, (BYTE*) pEthFrame, iEthLen ) != iEthLen)
-                        {
-                            PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
-                            // "%1d:%04X CTC: error writing to file %s: %s"
-                            WRMSG( HHC00936, "E",
-                                    SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->filename,
-                                    strerror( errno ) );
-                            pDEVBLK->sense[0] = SENSE_EC;
-                            *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
-                            LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
-                            PTT_DEBUG( "WRIT EXIT         ", 000, pDEVBLK->devnum, -1 );
-                            return;
-                        }
-                        PTT_TIMING( "af write", 0, iEthLen, 1 );
-                        break;
-
-                    case 0x04:              // LCS Baffle
+                    case LCS_FRMTYP_SNA:    // 0x04: LCS Baffle
 
                         PTT_DEBUG( "WRIT: Baffle 1    ", -1, pDEVBLK->devnum, -1 );
 
                         // Trace received command frame...
                         if (pLCSBLK->fDebug)
-                        {
-                            {                                                                          /* FixMe! Remove! */
-                                char    tmp[256];
-                                snprintf( (char*)tmp, 256, "lcs baffle thingy received" );
-                                // HHC03983 "%1d:%04X %s: %s"
-                                WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS", tmp );
-                            }                                                                          /* FixMe! Remove! */
+                        {                                                                          /* FixMe! Remove! */
+                            // HHC03983 "%1d:%04X %s: %s"
+                            WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+                                                                         "lcs baffle thingy received" );
                             net_data_trace( pDEVBLK, (BYTE*)pLCSHDR, iLength, '<', 'D', "baffle", 0 );
-                        }
+                        }                                                                          /* FixMe! Remove! */
 
                         if (pLCSDEV->bFlipFlop == WCTL)
                         {
                             pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
-                            FETCH_HW( hwLenBaf1, pLCSBAF1->LenBaf1 );
-//                          FETCH_HW( hwLenBaf2, pLCSBAF1->LenBaf2 );
+                            FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+//                          FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
                             pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
-                            FETCH_HW( hwSeqNum, pLCSBAF2->SeqNum );
-                            pLCSDEV->hwBaffleSeqNum = hwSeqNum;         // SNA LCSBAF2 sequence number
-                            pLCSDEV->bBaffleType = pLCSBAF1->unknown3;  // SNA LCSBAF1 type
+                            FETCH_HW( pLCSDEV->hwTypeBaf, pLCSBAF1->hwTypeBaf );   // SNA LCSBAF1 type
+                            FETCH_HW( pLCSDEV->hwSeqNumBaf, pLCSBAF2->hwSeqNum );  // SNA LCSBAF2 sequence number
                             LCS_EnqueueBaffle_SNA( pLCSDEV, NULL, 0 );
                             pLCSDEV->fAttnRequired = TRUE;
                         }
 
                         break;
 
-                    case LCS_FRMTYP_CMD:    // LCS Command Frame
+                    case LCS_FRMTYP_CMD:    // 0x00: LCS Command Frame
 
                         pCmdFrame = (PLCSCMDHDR)pLCSHDR;
 
@@ -1835,28 +1740,27 @@ static const BYTE Baffle_0x98_Inbound[32] =
                         {
                             //  HHC00933  =  "%1d:%04X CTC: executing command %s"
 
-                        case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
-                            PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                            if (pLCSBLK->fDebug)
-                                WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
-                            LCS_StartLan_SNA( pLCSDEV, pCmdFrame, iLength );
-                            pLCSDEV->fAttnRequired = TRUE;
-                            break;
+// ??                   case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
+// ??                       PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+// ??                       if (pLCSBLK->fDebug)
+// ??                           WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
+// ??                       LCS_StartLan_SNA( pLCSDEV, pCmdFrame, iLength );
+// ??                       pLCSDEV->fAttnRequired = TRUE;
+// ??                       break;
 
-                        case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
-                            PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-                            if (pLCSBLK->fDebug)
-                                WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
-                            LCS_LanStats_SNA( pLCSDEV, pCmdFrame, iLength );
-                            pLCSDEV->fAttnRequired = TRUE;
-                            break;
+// ??                   case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
+// ??                       PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+// ??                       if (pLCSBLK->fDebug)
+// ??                           WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
+// ??                       LCS_LanStats_SNA( pLCSDEV, pCmdFrame, iLength );
+// ??                       pLCSDEV->fAttnRequired = TRUE;
+// ??                       break;
 
                         case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
                             PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
                             if (pLCSBLK->fDebug)
                                 WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
                             LCS_StopLan_SNA( pLCSDEV, pCmdFrame, iLength );
-                            pLCSDEV->fAttnRequired = FALSE;
                             break;
 
                         default:
@@ -1867,7 +1771,7 @@ static const BYTE Baffle_0x98_Inbound[32] =
                                 MSGBUF( buf, "other (0x%2.2X)", pCmdFrame->bCmdCode );
                                 WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, buf );
                             }
-                            LCS_DefaultCmd_SNA( pLCSDEV, pCmdFrame, iLength );
+                            LCS_UnsuppCmd_SNA( pLCSDEV, pCmdFrame, iLength );
                             break;
 
                         } // end switch (LCS Command Frame cmd code)
@@ -1881,7 +1785,7 @@ static const BYTE Baffle_0x98_Inbound[32] =
                         ASSERT( FALSE );
                         pDEVBLK->sense[0] = SENSE_EC;
                         *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
-                        LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
+                // ??   LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
                         PTT_TIMING( "end write",  0, 0, 0 );
                         PTT_DEBUG( "WRIT EXIT         ", 000, pDEVBLK->devnum, -1 );
                         return;
@@ -1889,34 +1793,214 @@ static const BYTE Baffle_0x98_Inbound[32] =
                     } // end switch (LCS Frame type)
 
                 } // end while (1)
-            } // end if (pLCSDEV->bFlipFlop == WCTL || pLCSDEV->bFlipFlop == 0)
-//??            else  // pLCSDEV->bFlipFlop == SCB
-//??            {
-//??
-//??                PTT_DEBUG( "WRIT: Baffle 2    ", -1, pDEVBLK->devnum, -1 );
-//??
-//??                // Trace received command frame...
-//??                if (pLCSBLK->fDebug)
-//??                {
-//??                    {                                                                          /* FixMe! Remove! */
-//??                        char    tmp[256];
-//??                        snprintf( (char*)tmp, 256, "lcs baffle sna short thingy received" );
-//??                        // HHC03983 "%1d:%04X %s: %s"
-//??                        WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS", tmp );
-//??                    }                                                                          /* FixMe! Remove! */
-//??                }
-//??
-//??            } // end else  // pLCSDEV->bFlipFlop == SCB
+
+            }
+            else
+            {
+
+                // The output is an OCTL with nothing following
+
+                PTT_DEBUG( "WRIT: OCTL only   ", -1, pDEVBLK->devnum, -1 );
+
+                // Trace received OCTL...
+                if (pLCSBLK->fDebug)
+                {                                                                          /* FixMe! Remove! */
+                    // HHC03983 "%1d:%04X %s: %s"
+                    WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+                                                                     "lcs OCTL only received" );
+                }                                                                          /* FixMe! Remove! */
+
+                if (pLCSDEV->bFlipFlop == WCTL)
+                {
+                    LCS_EnqueueBaffle_SNA( pLCSDEV, NULL, 0 );
+                }
+                else  // pLCSDEV->bFlipFlop == SCB
+                {
+                    memset(BaffleIn, 0, sizeof(BaffleIn));
+                    if (pLCSDEV->hwTypeBaf == 0x0C99 )
+                    {
+                        memcpy(BaffleIn, Baffle_0xCC99_Inbound, 50 );
+                        iBaffleInLen = 50;
+                    }
+                    else if (pLCSDEV->hwTypeBaf == 0x0C0D )
+                    {
+                        memcpy(BaffleIn, Baffle_0xCC0D_Inbound, 56 );
+                        iBaffleInLen = 56;
+                    }
+                    else if (pLCSDEV->hwTypeBaf == 0x0C0E )
+                    {
+                        memcpy(BaffleIn, Baffle_0xCC0E_Inbound, 32 );
+                        iBaffleInLen = 32;
+                    }
+                    else if (pLCSDEV->hwTypeBaf == 0x0C98 )
+                    {
+                        memcpy(BaffleIn, Baffle_0xCC98_Inbound, 32 );
+                        iBaffleInLen = 32;
+                    }
+                    else
+                    {
+                        iBaffleInLen = 0;
+                    }
+                    if (iBaffleInLen)
+                    {
+                        pLCSHDR = (PLCSHDR)&BaffleIn;
+                        pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+                        FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+//                      FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+                        pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+                        STORE_HW( pLCSBAF2->hwSeqNum, pLCSDEV->hwSeqNumBaf );
+                        if (pLCSDEV->hwTypeBaf == 0x0C99 )
+                        {
+                            // pLCSBAF2 will be pointing to:-
+                            //  01FFFF00 00030000 06FFFFFF FFFFFF00 0005D500 0000
+                            pBaffleMAC = (BYTE*)pLCSBAF2;
+                            pBaffleMAC += 9;
+                            memcpy( pBaffleMAC, pLCSPORT->MAC_Address, IFHWADDRLEN );
+#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
+                            pBaffleMAC[5]++;
+#endif
+                        }
+                    }
+                    LCS_EnqueueBaffle_SNA( pLCSDEV, (PLCSHDR)&BaffleIn, iBaffleInLen );
+                }
+            }
+
+        }
+
+        // The Write CCW is the only CCW in the channel program. This
+        // is the normal state while the Start LAN and LAN Stats
+        // commands are being responded to.
+        else
+        {
+
+            // The output should be an LCS command, either Start LAN
+            // or LAN Stats.
+
+            // Clear the ICTL
+            pLCSDEV->hwIctlSize = 0;
+            memset(&pLCSDEV->Ictl, 0, sizeof(LCSICTL));
+            // Clear the OCTL
+            pLCSDEV->hwOctlSize = 0;
+            memset(&pLCSDEV->Octl, 0, sizeof(LCSOCTL));
+            // Point at whatever has just arrived
+            pIOBufStart = pIOBuf;
+            pIOBufEnd = pIOBuf + sCount;
+
+
+            // The output is data
+
+            PTT_DEBUG( "WRIT: command     ", -1, pDEVBLK->devnum, -1 );
+
+            // Trace received command frame...
+            if (pLCSBLK->fDebug)
+            {                                                                          /* FixMe! Remove! */
+                // HHC03983 "%1d:%04X %s: %s"
+                WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+                                                                   "lcs command received" );
+            }                                                                          /* FixMe! Remove! */
+
+            while (1)
+            {
+                // Save current offset so we can tell how big the next frame is.
+                iPrevOffset = iOffset;
+
+                // Point to where the LCSHDR at the start of the next frame should be.
+                pLCSHDR = (PLCSHDR)( pIOBufStart + iOffset );
+
+                // Check that there is enough of the LCSHDR to contain the next
+                // frame offset, exit loop if there isn't.
+                if ((int)(pIOBufEnd - (BYTE*)pLCSHDR) < (int)sizeof(pLCSHDR->hwOffset))
+                    break;
+
+                // Get the next frame offset, exit loop if zero.
+                FETCH_HW( iOffset, pLCSHDR->hwOffset );
+                if (iOffset == 0)   // ("EOF")
+                    break;
+
+                // Calculate size of this LCS Frame
+                iLength = iOffset - iPrevOffset;
+
+                switch (pLCSHDR->bType)
+                {
+                case LCS_FRMTYP_CMD:    // 0x00: LCS Command Frame
+
+                    pCmdFrame = (PLCSCMDHDR)pLCSHDR;
+
+                    PTT_DEBUG( "WRIT: Cmd frame   ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+
+                    // Trace received command frame...
+                    if (pLCSBLK->fDebug)
+                    {
+                        // "%1d:%04X CTC: lcs command packet received"
+                        WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
+                        net_data_trace( pDEVBLK, (BYTE*)pCmdFrame, iLength, '<', 'D', "command", 0 );
+                    }
+
+                    switch (pCmdFrame->bCmdCode)
+                    {
+                        //  HHC00933  =  "%1d:%04X CTC: executing command %s"
+
+                    case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
+                        PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                        if (pLCSBLK->fDebug)
+                            WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
+                        LCS_StartLan_SNA( pLCSDEV, pCmdFrame, iLength );
+                        pLCSDEV->fAttnRequired = TRUE;
+                        break;
+
+                    case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
+                        PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                        if (pLCSBLK->fDebug)
+                            WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
+                        LCS_LanStats_SNA( pLCSDEV, pCmdFrame, iLength );
+                        pLCSDEV->fAttnRequired = TRUE;
+                        break;
+
+                    case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
+                        PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                        if (pLCSBLK->fDebug)
+                            WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
+                        LCS_StopLan_SNA( pLCSDEV, pCmdFrame, iLength );
+                        break;
+
+                    default:
+                        PTT_DEBUG( "*CMD=Unsupported! ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                        if (pLCSBLK->fDebug)
+                        {
+                            // "%1d:%04X CTC: executing command %s"
+                            MSGBUF( buf, "other (0x%2.2X)", pCmdFrame->bCmdCode );
+                            WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, buf );
+                        }
+                        LCS_UnsuppCmd_SNA( pLCSDEV, pCmdFrame, iLength );
+                        break;
+
+                    } // end switch (LCS Command Frame cmd code)
+
+                    break; // end case LCS_FRMTYP_CMD
+
+                default:
+                    PTT_DEBUG( "*WRIT Unsupp frame", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+                    // "%1d:%04X CTC: lcs write: unsupported frame type 0x%2.2X"
+                    WRMSG( HHC00937, "E", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pLCSHDR->bType );
+                    ASSERT( FALSE );
+                    pDEVBLK->sense[0] = SENSE_EC;
+                    *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
+             // ??  LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
+                    PTT_TIMING( "end write",  0, 0, 0 );
+                    PTT_DEBUG( "WRIT EXIT         ", 000, pDEVBLK->devnum, -1 );
+                    return;
+
+                } // end switch (LCS Frame type)
+
+            } // end while (1)
 
         }
 
     }
 
     // ----------------------------------------------------------------
-    //    End of LCS_Write for IP or SNA mode
+    //    End of LCS_Write
     // ----------------------------------------------------------------
-
-    LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames ); // (performance)
 
     *pResidual = 0;
     *pUnitStat = CSW_CE | CSW_DE;
@@ -2786,10 +2870,10 @@ static void  LCS_StopLan_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen
 }
 
 // ====================================================================
-//                       LCS_DefaultCmd_SNA
+//                       LCS_UnsuppCmd_SNA
 // ====================================================================
 
-static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
+static void  LCS_UnsuppCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmdLen )
 {
     LCSSTDFRM   Reply;
     int         iReplyLen = sizeof(Reply);  /* Used and changed by INIT_REPLY_FRAME */
@@ -2801,6 +2885,7 @@ static void  LCS_DefaultCmd_SNA( PLCSDEV pLCSDEV, PLCSCMDHDR pCmdFrame, int iCmd
     pLCSSTDFRM->bLCSCmdHdr.bInitiator    = LCS_INITIATOR_SNA;
 //  pLCSSTDFRM->bLCSCmdHdr.bLanType      = LCS_FRMTYP_ENET;
     pLCSSTDFRM->bLCSCmdHdr.bRelAdapterNo = pLCSDEV->bPort;
+    STORE_HW( pLCSSTDFRM->bLCSCmdHdr.hwReturnCode, 0xFFFF );
 
     LCS_EnqueueReply_SNA( pLCSDEV, (PLCSCMDHDR)pLCSSTDFRM, iReplyLen );
 }

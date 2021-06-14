@@ -581,20 +581,21 @@ struct _LCSICTL                           // LCS SNA Inbound Control
 
 struct _LCSBAF1                        // LCS SNA baffle 1
 {
-    HWORD       LenBaf1;               // Length of baffle 1
-    BYTE        unknown2;              // Always seems to contain 0x0C
-                                       // with WCTL, and always seems
-                                       // to contain 0xCC with SCB.
-    BYTE        unknown3;              // Always seems to contain the
-                                       // same value on WCTL/SCB pair.
-                                       // Seen 0x99 and 0x0D on activate,
-                                       // 0x0E and 0x98 on inactivate.
-    HWORD       LenBaf2;               // Length of baffle 2
-    BYTE        unknown6;              // Always seems to contain the
-                                       // same value on WCTL/SCB pair.
-                                       // Seen 0xC0 and 0x60 on activate,
-                                       // 0x60 and 0xC0 on inactivate.
-    BYTE        unknown7[5];
+    HWORD       hwLenBaf1;             // Length of baffle 1
+    HWORD       hwTypeBaf;             // Type of baffle
+    HWORD       hwLenBaf2;             // Length of baffle 2
+    BYTE        bUnknown6;             //
+    BYTE        bUnknown7;             //
+    BYTE        bUnknown8[4];          //
+                                       //
+    BYTE        bUnknown12[4];         //
+    BYTE        bUnknown16;            //
+    BYTE        bUnknown17;            //
+    BYTE        bUnknown18[2];         //
+    BYTE        bUnknown20[4];         //
+    BYTE        bUnknown24[4];         //
+    BYTE        bUnknown28[4];         //
+    BYTE        bUnknown32[2];         //
 } ATTRIBUTE_PACKED;
 
 
@@ -604,8 +605,8 @@ struct _LCSBAF1                        // LCS SNA baffle 1
 
 struct _LCSBAF2                        // LCS SNA baffle 2
 {
-    BYTE        unknown0;              // Always seems to contain 0x01.
-    HWORD       SeqNum;                // Sequence number
+    BYTE        bUnknown0;             // Always seems to contain 0x01.
+    HWORD       hwSeqNum;              // Sequence number
 } ATTRIBUTE_PACKED;
 
 
@@ -649,13 +650,12 @@ struct  _LCSDEV
     LCSICTL     Ictl;                   // SNA Inbound Control
                                         // (network byte order)
 
-    U32         bFlipFlopCount;         // SNA
-    BYTE        bFlipFlop;              // SNA
-    BYTE        bBaffleType;            // SNA LCSBAF1 type
-    U16         hwBaffleSeqNum;         // SNA LCSBAF2 sequence number
+    U16         hwTypeBaf;              // SNA LCSBAF1 type
+    U16         hwSeqNumBaf;            // SNA LCSBAF2 sequence number
     u_int       fChanProgActive:1;      // SNA Channel Program Active
     u_int       fAttnRequired:1;        // SNA Attention Required
     u_int       fPendingIctl:1;         // SNA Pending has LCSICTL structure
+    BYTE        bFlipFlop;              // SNA
 
     U16         iFrameOffset;           // Curr Offset into Buffer
     U16         iMaxFrameBufferSize;    // Device Buffer Size
