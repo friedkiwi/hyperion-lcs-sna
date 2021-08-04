@@ -74,6 +74,7 @@ struct  _LCSOCTL;           // LCS SNA Outbound Control
 struct  _LCSICTL;           // LCS SNA Inbound Control
 struct  _LCSBAF1;           // LCS SNA baffle 1
 struct  _LCSBAF2;           // LCS SNA baffle 2
+struct  _LCSIBH;            // LCSIBH
 
 typedef struct  _LCSBLK     LCSBLK,     *PLCSBLK;
 typedef struct  _LCSDEV     LCSDEV,     *PLCSDEV;
@@ -94,6 +95,7 @@ typedef struct  _LCSOCTL    LCSOCTL,    *PLCSOCTL;
 typedef struct  _LCSICTL    LCSICTL,    *PLCSICTL;
 typedef struct  _LCSBAF1    LCSBAF1,    *PLCSBAF1;
 typedef struct  _LCSBAF2    LCSBAF2,    *PLCSBAF2;
+typedef struct  _LCSIBH     LCSIBH,     *PLCSIBH;
 
 
 // --------------------------------------------------------------------
@@ -134,7 +136,6 @@ extern void     CTCI_Write( DEVBLK* pDEVBLK,   U32   sCount,
                             U32*    pResidual );
 
 extern int      LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] );
-extern void     LCS_Assist( PLCSPORT pLCSPORT );
 extern int      LCS_Close( DEVBLK* pDEVBLK );
 extern void     LCS_Query( DEVBLK* pDEVBLK, char** ppszClass,
                            int     iBufLen, char*  pBuffer );
@@ -144,13 +145,6 @@ extern void     LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
                                 int     iCCWSeq, BYTE* pIOBuf,
                                 BYTE*   pMore,   BYTE* pUnitStat,
                                 U32*    pResidual );
-
-extern void     LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
-                          BYTE*   pIOBuf,    BYTE* UnitStat,
-                          U32*    pResidual, BYTE* pMore );
-extern void     LCS_Write( DEVBLK* pDEVBLK,   U32   sCount,
-                           BYTE*   pIOBuf,    BYTE* UnitStat,
-                           U32*    pResidual );
 
 extern void     packet_trace( BYTE *addr, int len, BYTE dir );
 
@@ -411,7 +405,7 @@ struct _CTCISEG                         // CTCI Segment Header
 
 struct _LCSOCTL                           // LCS SNA Outbound Control
 {
-    HWORD       XCNOBUFC;
+    U16         XCNOBUFC;
     BYTE        XCNOSTAT;
 #define  XCNOXIDF  0x80
 #define  XCNOERRF  0x40
@@ -424,13 +418,13 @@ struct _LCSOCTL                           // LCS SNA Outbound Control
     BYTE        XCNOFMT;
     union _onp
     {
-        HWORD   XCNONUMS;
-        HWORD   XCNOPGCT;
+        U16     XCNONUMS;
+        U16     XCNOPGCT;
     } np;
     union _onh
     {
-        HWORD   XCNONUMR;
-        HWORD   XCNOHDSZ;
+        U16     XCNONUMR;
+        U16     XCNOHDSZ;
     } nh;
 } ATTRIBUTE_PACKED;
 
@@ -442,7 +436,7 @@ struct _LCSOCTL                           // LCS SNA Outbound Control
 
 struct _LCSICTL                           // LCS SNA Inbound Control
 {
-    HWORD       XCNIBUFC;
+    U16         XCNIBUFC;
     BYTE        XCNISTAT;
 #define  XCNIXIDF  0x80
 #define  XCNIERRF  0x40
@@ -452,10 +446,10 @@ struct _LCSICTL                           // LCS SNA Inbound Control
     BYTE        XCNIFMT;
     union _inp
     {
-        HWORD   XCNINUMS;
-        HWORD   XCNIPGCT;
+        U16     XCNINUMS;
+        U16     XCNIPGCT;
     } np;
-    HWORD       XCNINUMR;
+    U16         XCNINUMR;
 } ATTRIBUTE_PACKED;
 
 
@@ -581,21 +575,21 @@ struct _LCSICTL                           // LCS SNA Inbound Control
 
 struct _LCSBAF1                        // LCS SNA baffle 1
 {
-    HWORD       hwLenBaf1;             // Length of baffle 1
-    HWORD       hwTypeBaf;             // Type of baffle
-    HWORD       hwLenBaf2;             // Length of baffle 2
-    BYTE        bUnknown6;             //
-    BYTE        bUnknown7;             //
-    BYTE        bUnknown8[4];          //
+    HWORD       hwLenBaf1;             //  0  Length of baffle 1
+    HWORD       hwTypeBaf;             //  2  Type of baffle
+    HWORD       hwLenBaf2;             //  4  Length of baffle 2
+    BYTE        bUnknown6;             //  6
+    BYTE        bUnknown7;             //  7
+    BYTE        bUnknown8[4];          //  8
                                        //
-    BYTE        bUnknown12[4];         //
-    BYTE        bUnknown16;            //
-    BYTE        bUnknown17;            //
-    BYTE        bUnknown18[2];         //
-    BYTE        bUnknown20[4];         //
-    BYTE        bUnknown24[4];         //
-    BYTE        bUnknown28[4];         //
-    BYTE        bUnknown32[2];         //
+    BYTE        bUnknown12[4];         //  C
+    BYTE        bUnknown16;            // 10
+    BYTE        bUnknown17;            // 11
+    BYTE        bUnknown18[2];         // 12
+    BYTE        bUnknown20[4];         // 14
+    BYTE        bUnknown24[4];         // 18
+    BYTE        bUnknown28[4];         // 1C
+    BYTE        bUnknown32[2];         // 20
 } ATTRIBUTE_PACKED;
 
 
@@ -608,6 +602,20 @@ struct _LCSBAF2                        // LCS SNA baffle 2
     BYTE        bUnknown0;             // Always seems to contain 0x01.
     HWORD       hwSeqNum;              // Sequence number
 } ATTRIBUTE_PACKED;
+
+
+// --------------------------------------------------------------------
+// LCS Inbound Buffer Header
+// --------------------------------------------------------------------
+
+struct _LCSIBH                         // LCS Inbound Buffer Header
+{
+    PLCSIBH   pNextLCSIBH;             // Pointer to next LCSIBH
+    int       iAreaLen;                // Data area length
+    int       iDataLen;                // Data length
+    BYTE      bData[FLEXIBLE_ARRAY];   //
+} ATTRIBUTE_PACKED;
+#define SIZE_IBH  sizeof(LCSIBH)       // Size of LCSIBH
 
 
 // --------------------------------------------------------------------
@@ -655,7 +663,13 @@ struct  _LCSDEV
     u_int       fChanProgActive:1;      // SNA Channel Program Active
     u_int       fAttnRequired:1;        // SNA Attention Required
     u_int       fPendingIctl:1;         // SNA Pending has LCSICTL structure
+    u_int       fAcceptPackets;         // SNA Accept Packets from Network
     BYTE        bFlipFlop;              // SNA
+
+    LOCK        DevChainLock;           // SNA LCSIBH Chain LOCK
+    PLCSIBH     pFirstLCSIBH;           // SNA First LCSIBH in chain
+    PLCSIBH     pLastLCSIBH;            // SNA Last LCSIBH in chain
+    int         iNumLCSIBH;             // SNA Number of LCSIBHs on chain
 
     U16         iFrameOffset;           // Curr Offset into Buffer
     U16         iMaxFrameBufferSize;    // Device Buffer Size
@@ -980,6 +994,260 @@ struct  _LCSETHFRM
     LCSHDR      bLCSHdr;                // LCS Frame header
     BYTE        bData[FLEXIBLE_ARRAY];  // Ethernet Frame
 } ATTRIBUTE_PACKED;
+
+
+
+/**********************************************************************\
+ **********************************************************************
+ **                                                                  **
+ **            Non-device specific structures                        **
+ **                                                                  **
+ **********************************************************************
+\**********************************************************************/
+
+//
+// The LLC layer provides connectionless and conection-oriented data
+// transfer.
+//
+// Connectionless data transfer is commonly referred to as LLC type 1,
+// or LLC1. Connectionless service does not require you to establish
+// data links or link stations. After a Service Access Point (SAP) has
+// been enabled, the SAP can send and receive information to and from
+// a remote SAP that also uses connectionless service. Connectionless
+// service does not have any mode setting commands (such as SABME) and
+// does not require that state information is maintained.
+//
+// Connection-oriented data transfer is referred to as LLC type 2, or
+// LLC2. Connection-oriented service requires the establishment of
+// link stations. When the link station is established, a mode setting
+// command is necessary. Thereafter, each link station is responsible
+// to maintain link state information.
+//
+// LLC2 is implemented whenever Systems Network Architecture (SNA)
+// runs over a LAN or virtual LAN.
+//
+// Problems are rare in LLC1. In LLC2, two categories of problems can
+// occur:
+//   1. Sessions that do not establish
+//   2. Established sessions that intermittently fail
+//
+// An LLC frame is called an LLC Protocol Data Unit (LPDU), and is
+// formatted as follows:
+//   DSAP (1 byte)
+//   SSAP (1 byte)
+//   Control Field (1 or 2 bytes)
+//   Information Field (0 or more bytes)
+//
+// The LPDU includes two eight-bit address fields, called service
+// access points (SAP), or collectively LSAP in the OSI terminology.
+// Although the LSAP fields are 8 bits long, the low-order bit is
+// reserved for special purposes, leaving only 128 values available
+// for most purposes.
+//
+// DSAP (Destination SAP) is an 8-bit long field that represents the
+// logical addresses of the network layer entity intended to receive
+// the message. The low-order bit of the DSAP indicates whether it
+// contains an individual or a group address:
+// - if the low-order bit is 0, the remaining 7 bits of the DSAP
+//   specify an individual address, which refers to a single local
+//   service access point (LSAP) to which the packet should be
+//   delivered.
+// - if the low-order bit is 1, the remaining 7 bits of the DSAP
+//   specify a group address, which refers to a group of LSAPs to
+//   which the packet should be delivered.
+//
+// SSAP (Source SAP) is an 8-bit long field that represents the
+// logical address of the network layer entity that has created the
+// message. The low-order bit of the SSAP indicates whether the packet
+// is a command or response packet:
+// - if it's 0, the packet is a command packet, and
+// - if it's 1, the packet is a response packet.
+// The remaining 7 bits of the SSAP specify the LSAP (always an
+// individual address) from which the packet was transmitted.
+//
+// LSAP numbers are globally assigned by the IEEE to uniquely identify
+// well established international standards.
+//
+
+struct  _LPDU;
+struct  _LLC;
+
+typedef struct  _LPDU    LPDU,    *PLPDU;
+typedef struct  _LLC     LLC,     *PLLC;
+
+struct  _LPDU
+{
+    BYTE        bDSAP[1];
+    BYTE        bSSAP[1];
+    BYTE        bControl[2];
+};
+
+struct  _LLC
+{
+    LPDU        bLpdu;                 // LLC PDU DSAP, SSAP & Control
+    BYTE        bInfo[8];              // LLC PDU Information
+    U32         fwLpduSize;            // Size = 3 or 4
+    U32         fwInfoSize;            // Size = 0 or more, maximum 5.
+    U32         fwDSAP;                // DSAP (Destination Service Access Point)
+    U32         fwDSAP_IG;             // Individual or Group
+    U32         fwSSAP;                // SSAP (Source Service Access Point)
+    U32         fwSSAP_CR;             // Command or Response
+    U32         fwNS;                  // NS count
+    U32         fwNR;                  // NR count
+    U32         fwPF;                  // P or F bit
+    U32         fwSS;                  // S bits, i.e. type of Supervisory
+    U32         fwM;                   // M bits, i.e. type of Unnumbered
+    U32         fwType;
+};
+#define SS_Receiver_Ready           0    // B'00'
+#define SS_Receiver_Not_Ready       1    // B'01'
+#define SS_Reject                   2    // B'10'
+#define M_DM_Response               3    // B'00011' = DM Response (0x1F)
+#define M_DISC_Command              8    // B'01000' = DISC Command (0x53)
+#define M_UA_Response               12   // B'01100' = UA Response(0x73)
+#define M_SABME_Command             15   // B'01111' = SABME Command(0x7F)
+#define M_FRMR_Response             17   // B'10001' = FRMR Response(0x87)
+#define M_XID_Command_or_Response   23   // B'10111'   XID Command or Response
+#define M_TEST_Command_or_Response  28   // B'11100'   TEST Command or Response
+
+#define LSAP_Null                 0x00   //
+#define LSAP_SNA_Path_Control     0x04   //
+#define LSAP_SNAP                 0xAA   // Sub-Network Access Protocol
+
+#define Type_Information_Frame      1    //
+#define Type_Supervisory_Frame      2    //
+#define Type_Unnumbered_Frame       3    //
+
+
+
+/**********************************************************************\
+ **********************************************************************
+ **                                                                  **
+ **                    SNA structures                                **
+ **                                                                  **
+ **********************************************************************
+\**********************************************************************/
+
+struct _XID3;
+union  _CVhdr;
+struct _NNcv;
+struct _PSIDcv;
+struct _TGDcv;
+struct _CSVcv;
+struct _HPRcv;
+
+typedef struct _XID3   XID3,   *PXID3;
+typedef union  _CVhdr  CVhdr,  *PCVhdr;
+typedef struct _NNcv   NNcv,   *PNNcv;
+typedef struct _PSIDcv PSIDcv, *PPSIDcv;
+typedef struct _TGDcv  TGDcv,  *PTGDcv;
+//  typedef struct _CSVcv  CSVcv,  *PCSVcv;
+typedef struct _HPRcv  HPRcv,  *PHPRcv;
+
+struct _XID3                       /* XID3                           */
+{                                  /*                                */
+                                   /* Note: The first 31-bytes       */
+                                   /* of the XID3 are an XID3,       */
+                                   /* defined in SNA Formats.        */
+                                   /*                                */
+/*000*/  BYTE   Format : 4;        /* Format of XID (4-bits),        */
+         BYTE   Sending : 4;       /* Type XID-sending node (4-bits) */
+/*001*/  BYTE   Length;            /* Length of the XID3             */
+/*002*/  BYTE   NodeID[4];         /* Node identification:           */
+                                   /* Block number (12 bits),        */
+                                   /* ID number (20-bits)            */
+/*006*/  BYTE   Reserved1[2];      /* Reserved                       */
+                                   /* of any control vectors         */
+/*008*/  BYTE   CharSend[2];       /* Characteristics of XID sender  */
+/*00A*/  BYTE   Byte10;            /*                                */
+/*00B*/  BYTE   Byte11;            /*                                */
+/*00C*/  BYTE   Byte12;            /*                                */
+/*00D*/  BYTE   Reserved2[2];      /* Reserved                       */
+/*00F*/  BYTE   Byte15;            /*                                */
+/*010*/  BYTE   TG;                /* Transmission Group Number      */
+/*011*/  BYTE   DLC;               /* DLC type                       */
+/*012*/  BYTE   DepSectionLength;  /* Dependant Section Length       */
+                                   /* (including this length field)  */
+/*013*/  BYTE   DepSection[FLEXIBLE_ARRAY];  /* Dependant Section    */
+} ATTRIBUTE_PACKED;                /*                                */
+
+/* Control Vector header                                             */
+union _CVhdr                       /*                                */
+{                                  /*                                */
+    /* KL: The Key field precedes the Length field and the length    */
+    /*     is the number of bytes, in binary, of the substructure's  */
+    /*     Data field (e.g., Vector Data field). The Length field    */
+    /*     value does not include the length of the substructure     */
+    /*     Vector Header field (consisting of the Length and Key     */
+    /*     fields).                                                  */
+    struct {                       /*                                */
+    /*000*/  BYTE   Key;           /* Vector key                     */
+    /*001*/  BYTE   Length;        /* Vector length                  */
+    } KL;                          /*                                */
+    /* LT: The Length field precedes the Key field (also called the  */
+    /*     "type" field hence "LT") and the length is the number of  */
+    /*     bytes, in binary, of the substructure including both the  */
+    /*     Vector Header field (consisting of the Length and Key     */
+    /*     fields) and the Data field.                               */
+    struct {                       /*                                */
+    /*000*/  BYTE   Length;        /* Vector length                  */
+    /*001*/  BYTE   Key;           /* Vector key                     */
+    } LT;                          /*                                */
+} ATTRIBUTE_PACKED;                /*                                */
+
+/* Network Name Control Vector                                       */
+struct _NNcv                       /* NNcv                           */
+{                                  /*                                */
+/*000*/  CVhdr  Header;            /* Vector header                  */
+/*002*/  BYTE   Type;              /* Name type                      */
+/*003*/  BYTE   Value[FLEXIBLE_ARRAY];  /*                           */
+} ATTRIBUTE_PACKED;                /*                                */
+#define KEY_NNcv 0x0E              /* NNcv key                       */
+#define TYPE_PU_NAME 0xF1          /* PU Name                        */
+#define TYPE_CP_NAME 0xF4          /* CP Name                        */
+#define TYPE_LS_NAME 0xF7          /* Link Station Name              */
+
+/* Product Set ID Control Vector                                     */
+struct _PSIDcv                     /* PSIDcv                         */
+{                                  /*                                */
+/*000*/  CVhdr  Header;            /* Vector header                  */
+/*002*/  BYTE   Data[FLEXIBLE_ARRAY];  /*                            */
+} ATTRIBUTE_PACKED;                /*                                */
+#define KEY_PSIDcv 0x10            /* PSIDcv key                     */
+
+/* TG Description Control Vector                                     */
+struct _TGDcv                      /* TGDcv                          */
+{                                  /*                                */
+/*000*/  CVhdr  Header;            /* Vector header                  */
+/*002*/  BYTE   Data[FLEXIBLE_ARRAY];  /*                            */
+} ATTRIBUTE_PACKED;                /*                                */
+#define KEY_TGDcv 0x46             /* TGDcv key                      */
+
+//  /* Call Security Verification Control Vector                         */
+//  struct _CSVcv                      /* CSVcv                          */
+//  {                                  /*                                */
+//  /*000*/  CVhdr  Header;            /* Vector header                  */
+//  /*002*/  BYTE   Reserved;          /* Reserved                       */
+//  /*003*/  BYTE   LenSIDs;           /* Length of Security IDs         */
+//                                     /* (including this length field)  */
+//  /*004*/  BYTE   SID1[8];           /* First 8-byte Security ID       */
+//                                     /* (random data or                */
+//                                     /* enciphered random data)        */
+//  /*00C*/  BYTE   SID2[8];           /* Second 8-byte Security ID      */
+//                                     /* (random data or                */
+//                                     /* enciphered random data or      */
+//                                     /* space characters)              */
+//  } ATTRIBUTE_PACKED;                /*                                */
+//  #define KEY_CSVcv 0x56             /* CSVcv key                      */
+
+/* HPR Capabilities Control Vector                                   */
+struct _HPRcv                      /* HPRcv                          */
+{                                  /*                                */
+/*000*/  CVhdr  Header;            /* Vector header                  */
+/*002*/  BYTE   Data[FLEXIBLE_ARRAY];  /*                            */
+} ATTRIBUTE_PACKED;                /*                                */
+#define KEY_HPRcv 0x61             /* HPRcv key                      */
+
 
 
 

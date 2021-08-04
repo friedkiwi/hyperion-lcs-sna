@@ -822,7 +822,7 @@ LOGM_DLL_IMPORT int  panel_command_capture( char* cmd, char** resp, bool quiet )
 #define HHC00967 "CTC: lcs device port %2.2X: read thread: waiting for start event"
 #define HHC00968 "CTC: lcs device port %2.2X: read thread: port started"
 #define HHC00969 "CTC: lcs device port %2.2X: read thread: port stopped"
-//efine HHC00970 (available)
+#define HHC00970 "CTC: lcs device port %2.2X: 802.2 LLC error, discarding frame"
 #define HHC00971 "%1d:%04X CTC: connect to %s:%s failed, starting server"
 #define HHC00972 "%1d:%04X CTC: connected to %s:%s"
 #define HHC00973 "%1d:%04X CTC: error reading from file %s: %s"
