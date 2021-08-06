@@ -74,7 +74,8 @@ struct  _LCSOCTL;           // LCS SNA Outbound Control
 struct  _LCSICTL;           // LCS SNA Inbound Control
 struct  _LCSBAF1;           // LCS SNA baffle 1
 struct  _LCSBAF2;           // LCS SNA baffle 2
-struct  _LCSIBH;            // LCSIBH
+struct  _LCSIBH;            // LCS SNA Inbound Buffer Header
+struct  _LCSCONN;           // LCS SNA Connection
 
 typedef struct  _LCSBLK     LCSBLK,     *PLCSBLK;
 typedef struct  _LCSDEV     LCSDEV,     *PLCSDEV;
@@ -96,6 +97,7 @@ typedef struct  _LCSICTL    LCSICTL,    *PLCSICTL;
 typedef struct  _LCSBAF1    LCSBAF1,    *PLCSBAF1;
 typedef struct  _LCSBAF2    LCSBAF2,    *PLCSBAF2;
 typedef struct  _LCSIBH     LCSIBH,     *PLCSIBH;
+typedef struct  _LCSCONN    LCSCONN,    *PLCSCONN;
 
 
 // --------------------------------------------------------------------
@@ -605,17 +607,43 @@ struct _LCSBAF2                        // LCS SNA baffle 2
 
 
 // --------------------------------------------------------------------
-// LCS Inbound Buffer Header
+// LCS SNA Inbound Buffer Header
 // --------------------------------------------------------------------
 
-struct _LCSIBH                         // LCS Inbound Buffer Header
+struct _LCSIBH                         // LCS SNA Inbound Buffer Header
 {
     PLCSIBH   pNextLCSIBH;             // Pointer to next LCSIBH
     int       iAreaLen;                // Data area length
     int       iDataLen;                // Data length
     BYTE      bData[FLEXIBLE_ARRAY];   //
 } ATTRIBUTE_PACKED;
-#define SIZE_IBH  sizeof(LCSIBH)       // Size of LCSIBH
+
+
+// --------------------------------------------------------------------
+// LCS SNA Connection
+// --------------------------------------------------------------------
+
+struct _LCSCONN                        // LCS SNA Connection
+{
+    PLCSCONN  pNextLCSCONN;            // Pointer to next LCSCONN
+    MAC       bLocalMAC;               // Local MAC address
+    MAC       bRemoteMAC;              // Remote MAC address
+    BYTE      bConnectionId[5];        // Connection ID
+    U16       hwXIDSeqNum;             // XID Exchange Sequence number
+    U16       hwDataSeqNum;            // Data Sequence number
+    BYTE*     pLocalCPNameCV;          // Local CP Name Control Vector
+    BYTE*     pLocalPUNameCV;          // Local PU Name Control Vector
+    BYTE*     pLocalLSNameCV;          // Local Link Station Name Control Vector
+    BYTE*     pLocalPSetIdCV;          // Local Product Set ID Control Vector
+    BYTE*     pLocalTGDescCV;          // Local TG Description Control Vector
+    BYTE*     pLocalHPRCapCV;          // Local HPR Capabilities Control Vector
+    BYTE*     pRemoteCPNameCV;         // Remote CP Name Control Vector
+    BYTE*     pRemotePUNameCV;         // Remote PU Name Control Vector
+    BYTE*     pRemoteLSNameCV;         // Remote Link Station Name Control Vector
+    BYTE*     pRemotePSetIdCV;         // Remote Product Set ID Control Vector
+    BYTE*     pRemoteTGDescCV;         // Remote TG Description Control Vector
+    BYTE*     pRemoteHPRCapCV;         // Remote HPR Capabilities Control Vector
+};
 
 
 // --------------------------------------------------------------------
@@ -666,10 +694,15 @@ struct  _LCSDEV
     u_int       fAcceptPackets;         // SNA Accept Packets from Network
     BYTE        bFlipFlop;              // SNA
 
-    LOCK        DevChainLock;           // SNA LCSIBH Chain LOCK
+    LOCK        LCSIBHChainLock;        // SNA LCSIBH Chain LOCK
     PLCSIBH     pFirstLCSIBH;           // SNA First LCSIBH in chain
     PLCSIBH     pLastLCSIBH;            // SNA Last LCSIBH in chain
     int         iNumLCSIBH;             // SNA Number of LCSIBHs on chain
+
+    LOCK        LCSCONNChainLock;       // SNA LCSCONN Chain LOCK
+    PLCSCONN    pFirstLCSCONN;          // SNA First LCSCONN in chain
+    PLCSCONN    pLastLCSCONN;           // SNA Last LCSCONN in chain
+    int         iNumLCSCONN;            // SNA Number of LCSCONNs on chain
 
     U16         iFrameOffset;           // Curr Offset into Buffer
     U16         iMaxFrameBufferSize;    // Device Buffer Size

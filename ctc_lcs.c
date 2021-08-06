@@ -157,7 +157,14 @@ static void     Process_0C98 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF
 static PLCSIBH  alloc_lcs_buffer( PLCSDEV pLCSDEV, int iSize );
 static void     add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH );
 static PLCSIBH  remove_buffer_from_chain( PLCSDEV pLCSDEV );
-static void*    remove_and_free_any_buffers_on_chain( LCSDEV* pLCSDEV );
+static void     remove_and_free_any_buffers_on_chain( PLCSDEV pLCSDEV );
+
+static PLCSCONN alloc_lcs_connection( PLCSDEV pLCSDEV );
+static void     add_connection_to_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN );
+static PLCSCONN find_connection_by_mac_addresses( PLCSDEV pLCSDEV, MAC* pMAC1, MAC* pMAC2 );
+static PLCSCONN find_connection_by_connection_id( PLCSDEV pLCSDEV, BYTE* pConnID );
+static void     remove_connection_from_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN );
+static void     remove_and_free_any_connections_on_chain( PLCSDEV pLCSDEV );
 
 // ====================================================================
 //                       Helper macros
@@ -398,7 +405,8 @@ int  LCS_Init( DEVBLK* pDEVBLK, int argc, char *argv[] )
         initialize_lock( &pLCSDev->DevDataLock );
         initialize_lock( &pLCSDev->DevEventLock );
         initialize_condition( &pLCSDev->DevEvent );
-        initialize_lock( &pLCSDev->DevChainLock );
+        initialize_lock( &pLCSDev->LCSIBHChainLock );
+        initialize_lock( &pLCSDev->LCSCONNChainLock );
 
         // Create the TAP interface (if not already created by a
         // previous pass. More than one interface can exist on a port.
@@ -1185,11 +1193,11 @@ void  LCS_Query( DEVBLK* pDEVBLK, char** ppszClass,
 
     char *sType[] = { "", " Pri", " Sec" };
 
-    LCSDEV*  pLCSDEV;
+    PLCSDEV  pLCSDEV;
 
     BEGIN_DEVICE_CLASS_QUERY( "CTCA", pDEVBLK, ppszClass, iBufLen, pBuffer );
 
-    pLCSDEV = (LCSDEV*) pDEVBLK->dev_data;
+    pLCSDEV = (PLCSDEV) pDEVBLK->dev_data;
 
     if (!pLCSDEV)
     {
@@ -1214,7 +1222,7 @@ void  LCS_Query( DEVBLK* pDEVBLK, char** ppszClass,
 
 static void  LCS_BegMWrite( DEVBLK* pDEVBLK )
 {
-    if (((LCSDEV*)pDEVBLK->dev_data)->pLCSBLK->fNoMultiWrite) return;
+    if (((PLCSDEV)pDEVBLK->dev_data)->pLCSBLK->fNoMultiWrite) return;
     PTT_TIMING( "b4 begmw", 0, 0, 0 );
     TUNTAP_BegMWrite( pDEVBLK->fd, CTC_DEF_FRAME_BUFFER_SIZE );
     PTT_TIMING( "af begmw", 0, 0, 0);
@@ -1222,7 +1230,7 @@ static void  LCS_BegMWrite( DEVBLK* pDEVBLK )
 
 static void  LCS_EndMWrite( DEVBLK* pDEVBLK, int nEthBytes, int nEthFrames )
 {
-    if (((LCSDEV*)pDEVBLK->dev_data)->pLCSBLK->fNoMultiWrite) return;
+    if (((PLCSDEV)pDEVBLK->dev_data)->pLCSBLK->fNoMultiWrite) return;
     PTT_TIMING( "b4 endmw", 0, nEthBytes, nEthFrames );
     TUNTAP_EndMWrite( pDEVBLK->fd );
     PTT_TIMING( "af endmw", 0, nEthBytes, nEthFrames );
@@ -2877,10 +2885,8 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
 {
     PLCSHDR     pLCSHdr;
     PLCSDEV     pLCSDEV = (PLCSDEV)pDEVBLK->dev_data;
-    PLCSICTL    pLCSICTL;
     size_t      iLength = 0;
     int         iTraceLen;
-    U16         hwDataSize;
 
     struct timespec  waittime;
     struct timeval   now;
@@ -2951,63 +2957,28 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
 
     PTT_DEBUG( "READ using buffer ", 000, pDEVBLK->devnum, -1 );
 
-    // Point to the end of all buffered LCS Frames (where
-    // the next Frame *would* go if there was one), and
-    // mark the end of this batch of LCS Frames by setting
-    // the "offset to NEXT frame" LCS Header field to zero
-    // (a zero "next Frame offset" is like an "EOF" flag).
+    // Point to the end of all buffered LCS Frames...
+    // (where the next Frame *would* go if there was one)
+
     pLCSHdr = (PLCSHDR)( pLCSDEV->bFrameBuffer +
                          pLCSDEV->iFrameOffset );
+
+    // Mark the end of this batch of LCS Frames by setting
+    // the "offset to NEXT frame" LCS Header field to zero.
+    // (a zero "next Frame offset" is like an "EOF" flag)
+
     STORE_HW( pLCSHdr->hwOffset, 0x0000 );
 
-    //
-    if (pLCSDEV->bMode == LCSDEV_MODE_SNA)
-    {
-        if ( pLCSDEV->fPendingIctl )
-        {
-            // Calculate how much data we're going to be giving them.
-            // Since 'iFrameOffset' points to the next available LCS
-            // Frame slot in our buffer, the total amount of LCS Frame
-            // data we have is exactly that amount. We give them two
-            // extra bytes however so that they can optionally chase
-            // the "hwOffset" field in each LCS Frame's LCS Header to
-            // eventually reach our zero hwOffset "EOF" flag).
-            iLength = pLCSDEV->iFrameOffset;
+    // Calculate how much data we're going to be giving them.
 
-            //
-            pLCSICTL = (PLCSICTL)&pLCSDEV->bFrameBuffer;
-            hwDataSize = (U16) ( pLCSDEV->iFrameOffset - pLCSDEV->hwIctlSize );
-            if ( hwDataSize )
-            {
-                iLength += sizeof(pLCSHdr->hwOffset);
-                hwDataSize += sizeof(pLCSHdr->hwOffset);
-                STORE_HW( pLCSICTL, hwDataSize );
-            }
-        }
-        else
-        {
-            // Calculate how much data we're going to be giving them.
-            // Since 'iFrameOffset' points to the next available LCS
-            // Frame slot in our buffer, the total amount of LCS Frame
-            // data we have is exactly that amount. We give them two
-            // extra bytes however so that they can optionally chase
-            // the "hwOffset" field in each LCS Frame's LCS Header to
-            // eventually reach our zero hwOffset "EOF" flag).
-            iLength = pLCSDEV->iFrameOffset + sizeof(pLCSHdr->hwOffset);
-        }
-    }
-    else
-    {
-        // Calculate how much data we're going to be giving them.
-        // Since 'iFrameOffset' points to the next available LCS
-        // Frame slot in our buffer, the total amount of LCS Frame
-        // data we have is exactly that amount. We give them two
-        // extra bytes however so that they can optionally chase
-        // the "hwOffset" field in each LCS Frame's LCS Header to
-        // eventually reach our zero hwOffset "EOF" flag).
+    // Since 'iFrameOffset' points to the next available LCS
+    // Frame slot in our buffer, the total amount of LCS Frame
+    // data we have is exactly that amount. We give them two
+    // extra bytes however so that they can optionally chase
+    // the "hwOffset" field in each LCS Frame's LCS Header to
+    // eventually reach our zero hwOffset "EOF" flag).
 
-        iLength = pLCSDEV->iFrameOffset + sizeof(pLCSHdr->hwOffset);
-    }
+    iLength = pLCSDEV->iFrameOffset + sizeof(pLCSHdr->hwOffset);
 
     // (calculate residual and set memcpy amount)
 
@@ -3071,7 +3042,6 @@ void  LCS_Read( DEVBLK* pDEVBLK,   U32   sCount,
     pLCSDEV->iFrameOffset  = 0;
     pLCSDEV->fReplyPending = 0;
     pLCSDEV->fDataPending  = 0;
-    pLCSDEV->fPendingIctl = 0;
 
     PTT_DEBUG(        "REL  DevDataLock  ", 000, pDEVBLK->devnum, -1 );
     release_lock( &pLCSDEV->DevDataLock );
@@ -4657,7 +4627,11 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 // respectively, 16 (0x10) and 43 (0x2B) bytes in length.
 //
 // The outbound LCSBAF2 contains the MAC address of the remote end
-// of the connection that is about to be activated.
+// of the connection that is about to be activated. The following
+// shows an LCSBAF2 with the remote MAC address starting at +3:-
+//   01000800 0CCE4B47 40040000 00000000
+//   00010000 02000000 00000000 00000000
+//   00000000 02000000 000004
 //
 // The inbound LCSBAF1 and LCSBAF2 returned to VTAM are, respectively,
 // 28 (0x1C) and 3 (0x03) bytes in length.
@@ -4680,6 +4654,9 @@ static const BYTE Inbound_CC0A[INBOUND_CC0A_SIZE] =
                    0x01, 0xff, 0xff, 0x00                            /* LCSBAF2 */
                  };
 
+    DEVBLK*     pDEVBLK;                                                                   /* FixMe! Remove! */
+    PLCSPORT    pLCSPORT;
+    PLCSCONN    pLCSCONN;
     PLCSIBH     pLCSIBH;
     PLCSHDR     pInHDR;
     PLCSBAF1    pInBAF1;
@@ -4687,6 +4664,21 @@ static const BYTE Inbound_CC0A[INBOUND_CC0A_SIZE] =
     U16         hwLenInBaf1;
 //  U16         hwLenInBaf2;
 
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];                                    /* FixMe! Remove! */
+    pLCSPORT = &pLCSDEV->pLCSBLK->Port[ pLCSDEV->bPort ];
+
+    pLCSCONN = alloc_lcs_connection( pLCSDEV );
+    add_connection_to_chain( pLCSDEV, pLCSCONN );
+
+    memcpy( pLCSCONN->bLocalMAC, pLCSPORT->MAC_Address, IFHWADDRLEN );
+#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
+    pLCSCONN->bLocalMAC[5]++;
+#endif
+    memcpy( pLCSCONN->bRemoteMAC, (BYTE*)pOutBAF2+3, IFHWADDRLEN );
+
+    if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
+        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
 
     pLCSIBH = alloc_lcs_buffer( pLCSDEV, (((INBOUND_CC0A_SIZE+9)/10)*10)+10 );
     pInHDR = (PLCSHDR)&pLCSIBH->bData;
@@ -4729,6 +4721,7 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
+    PLCSCONN  pLCSCONN;
     BYTE*     pEthFrame;
     int       iEthLen;
     BYTE      frame[64];
@@ -4746,6 +4739,10 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     memcpy( pEthFrame+14, (BYTE*)pLCSBAF2+23, 3 );           // Copy LLC
     pEthFrame[16] = 0xF3;                                    // Set LLC = TEST
     memset( pEthFrame+17, 0, 47 );                           // Clear remainder
+
+    // XID command, find the connection block.
+    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV,(BYTE*)pLCSBAF2+11 &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
+    pLCSCONN->hwXIDCount++;
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4794,6 +4791,7 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
+    PLCSCONN  pLCSCONN;
     BYTE*     pEthFrame;
     int       iEthLen;
     int       iTHetcLen;
@@ -4831,10 +4829,9 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     {
         // Extract vectors
     }
-   else
-    {
-        // Create connection block
-    }
+
+    // XID command, find the connection block.
+    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV,(BYTE*)pLCSBAF2+11 &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -5423,51 +5420,87 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
                    0x01, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff,   /* LCSBAF2 */
                    0xff
                  };
-//  02  00AA0800 00000000 00A80400 00144D10          4D10                                    600100000101010000400000FF00            01 0001 000040007470
-//      008F6001 00000101 01000040 0000FF00
-//      01000100 00400074 70
-//                          2D0000 0288CA6B                    TH etc
-//      81003100 1307B0B0 50330787 97978707
+//  00A80400  00144D10 008F6001 00000101 01000040 0000FF00  01 0001 00 00 40007470 2D00000288CA6B810031001307B0B05033078797978707
+//            0 1 2 3  4 5 6 7  8 9 A B  C D E F  0 1 2 3   0  1 2  3  4  5 6 7 8  9 A B C D E F 0 1 2 3 4 5 6 7 8 9 A B C D E F
+
+#define INBOUND_4C25_SIZE  46
+static const BYTE Inbound_4C25[INBOUND_4C25_SIZE] =
+                 {
+                    0x00, 0x2E, 0x04, 0x00,                          /* LCSHDR  */
+                    0x00, 0x0D, 0x4C, 0x25, 0x00, 0x1C, 0x60, 0x03,  /* LCSBAF1 */
+                    0x00, 0x00, 0x00, 0x01, 0x00,
+                    0x01, 0xff, 0xff, 0xC0, 0x00, 0x00, 0x00, 0x00,  /* LCSBAF2 */
+                    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                    0xff, 0xff, 0xff, 0x04, 0x00
+                 };
+//  002E0400  000D4C25 001C6003 00000001 00  01 0001 C0000000 00000000 00 400074700001 000CCE4B4740 0401F3 04 00
+//            0 1 2 3  4 5 6 7  8 9 A B  C   0  1 2  3 4 5 6  7 8 9 A  B  C D E F 0 1  2 3 4 5 6 7  8 9 A  B  C
+
+#define INBOUND_4C22_SIZE  29
+static const BYTE Inbound_4C22[INBOUND_4C22_SIZE] =
+                 {
+                    0x00, 0x1D, 0x04, 0x00,                          /* LCSHDR  */
+                    0x00, 0x0D, 0x4C, 0x22, 0x00, 0x0C, 0x60, 0x03,  /* LCSBAF1 */
+                    0x00, 0x00, 0x00, 0x01, 0x00,
+                    0x01, 0xff, 0xff, 0xC0, 0x00, 0x00, 0x00, 0x08,  /* LCSBAF2 */
+                    0x08, 0x00, 0x00, 0x00
+                 };
+//  002C0400  000D4C22 001B6003 00000001 00  01 0002 C0000000 08080000 00 destination. source...... LLC... TH etc...
+//            0 1 2 3  4 5 6 7  8 9 A B  C   0  1 2  3 4 5 6  7 8 9 A  B  C D E F 0 1  2 3 4 5 6 7  8 9 A  B C D ...
+
+#define INBOUND_4D00_SIZE  24
+static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
+                 {
+                    0x00, 0x18, 0x04, 0x00,
+                    0x00, 0x0C, 0x4D, 0x00, 0x00, 0x08, 0x60, 0x01,
+                    0x00, 0x00, 0x01, 0x01,
+                    0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+                 };
+//  00180400  000C4D00 00086001 00000101  01 0000 4000024000
+//            0 1 2 3  4 5 6 7  8 9 A B   0  1 2  3 4 5 6 7
+
+#define INBOUND_4D00_CONNID_SIZE  5
+static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
+                 {
+                   0x40, 0x00, 0x02, 0x40, 0x00
+                 };
 
     LLC         llc;
-    int         llcsize;
+    int         illcsize;
     BYTE*       pWork;
+    DEVBLK*     pDEVBLK;
+    PLCSBLK     pLCSBLK;
+    PLCSATTN    pLCSATTN;
     PETHFRM     pEthFrame;
     BYTE*       pLLCandData;
     int         iLLCandDatasize;
+    int         iDatasize;
+    PLCSCONN    pLCSCONN;
     PLCSIBH     pLCSIBH;
     PLCSHDR     pLCSHDR;
     PLCSBAF1    pLCSBAF1;
     PLCSBAF2    pLCSBAF2;
+    U16         hwOffset;
     U16         hwLenBaf1;
     U16         hwLenBaf2;
+    BYTE        fAttnRequired = FALSE;
 
 
-    // Point to the accepted Ethernet frame.
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];  /* SNA has only one device */
+    pLCSBLK = pLCSDEV->pLCSBLK;
+
+    // Point to the accepted Ethernet frame, point to the LLC
+    // and data, and get the length of the LLC and data.
     pEthFrame = (PETHFRM)pData;
     pLLCandData = &pEthFrame->bData[0];
-    iLLCandDatasize = (iSize - sizeof(ETHFRM));
+    FETCH_HW( iLLCandDatasize, pEthFrame->hwEthernetType );
 
     // Extract the bits and bytes from the 802.2 LLC.
-    llcsize = ExtractLLC( &llc, pLLCandData, iLLCandDatasize );
+    illcsize = ExtractLLC( &llc, pLLCandData, iLLCandDatasize );
 
     // Discard the frame if the 802.2 LLC appears to be questionable.
-    if ( !llcsize ) goto msg970_return;
-
-    // Obtain a buffer in which to construct the data to be passed to VTAM.
-    pLCSIBH = alloc_lcs_buffer( pLCSDEV, 2048 );
-
-    memcpy( &pLCSIBH->bData, Inbound_4D10, Inbound_4D10_Size );
-    pLCSIBH->iDataLen = Inbound_4D10_Size;
-
-    pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
-    pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
-    FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
-    FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-    pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
-
-    pWork = (BYTE*)pLCSBAF2;
-    memcpy( pWork+5, pLCSPORT->MAC_Address, 4 );   // Just the first 4-bytes!
+    if ( !illcsize ) goto msg970_return;
 
     //
     switch (llc.fwType)
@@ -5476,6 +5509,25 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
     // Information Frame.
     case Type_Information_Frame:
 
+        // Obtain a buffer in which to construct the data to be passed to VTAM.
+        pLCSIBH = alloc_lcs_buffer( pLCSDEV, 2048 );
+
+        memcpy( &pLCSIBH->bData, Inbound_4D10, Inbound_4D10_Size );
+        pLCSIBH->iDataLen = Inbound_4D10_Size;
+
+        pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+        pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+        FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+        FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+        pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+        pWork = (BYTE*)pLCSBAF2;
+        memcpy( pWork+5, pLCSPORT->MAC_Address, 4 );   // Just the first 4-bytes!
+        memcpy( (BYTE*)pLCSBAF2+5, pLCSPORT->MAC_Address, 4 );   // Just the first 4-bytes!
+
+//  memcpy(&pLCSBAF2->hwSeqNum, &pOutBAF2->hwSeqNum, sizeof(pLCSBAF2->hwSeqNum));
+
+        goto freebuf_msg970_return;
         break;
 
     // Supervisory Frame.
@@ -5484,7 +5536,7 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
         switch (llc.fwSS)
         {
 
-        // Supervisory Frame: SABME Command (B'00').
+        // Supervisory Frame: Receiver Ready.
         case SS_Receiver_Ready:
 
             /*FixMe!*/
@@ -5493,7 +5545,7 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
 
         // Supervisory Frame: Unknown.
         default:
-            goto freebuf_msg970_return;
+            goto msg970_return;
 
         }
 
@@ -5508,7 +5560,33 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
         // Unnumbered Frame: SABME Command (B'01111', 0x1B, 0x7F).
         case M_SABME_Command:
 
-            /*FixMe!*/
+            // XID response, find the connection block.
+            pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
+
+            // Obtain a buffer in which to construct the data to be passed to VTAM.
+            pLCSIBH = alloc_lcs_buffer( pLCSDEV, (((INBOUND_4D00_SIZE+9)/10)*10)+10 );
+
+            memcpy( &pLCSIBH->bData, Inbound_4D00, INBOUND_4D00_SIZE );
+            pLCSIBH->iDataLen = INBOUND_4D00_SIZE;
+
+            pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+            pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+            FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+            FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+            pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+            //
+            STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
+            pLCSCONN->hwDataSeqNum++;
+
+            memcpy( (BYTE*)pLCSBAF2+3, Inbound_4D00_ConnId, INBOUND_4D00_CONNID_SIZE );  // Copy Connection ID
+
+            // Add the buffer containing the reply to the chain.
+            add_buffer_to_chain( pLCSDEV, pLCSIBH );
+
+            fAttnRequired = TRUE;
+
+            /* FixMe!  After next read has conpleted, need to send Frame 11. Change AttnThread to ActionThread?  */
 
             break;
 
@@ -5530,7 +5608,71 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
             if (llc.fwSSAP_CR)  // Response
             {
 
-                /*FixMe!*/
+                // XID response, find the connection block.
+                pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
+
+                // Obtain a buffer in which to construct the data to be passed to VTAM.
+                // Note: The largest XID3 and vectors seen has been less than 160-bytes.
+                pLCSIBH = alloc_lcs_buffer( pLCSDEV, 500 );
+
+                memcpy( &pLCSIBH->bData, Inbound_4C22, INBOUND_4C22_SIZE );
+                pLCSIBH->iDataLen = INBOUND_4C22_SIZE;
+
+                pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+                pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+                FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+//              FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+                pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+                //
+                pLCSCONN->hwXIDSeqNum++;
+                STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
+
+                // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
+                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame+0, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame+6, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame+14, 3 );
+
+                pLCSIBH->iDataLen += (6 + 6 + 3);
+
+                FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+                hwLenBaf2 += (6 + 6 + 3);
+                STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
+
+                FETCH_HW( hwOffset, pLCSHDR->hwOffset );
+                hwOffset += (6 + 6 + 3);
+                STORE_HW( pLCSHDR->hwOffset, hwOffset );
+
+                // Copy the XID3 etc to the buffer.
+                iDatasize = (iLLCandDatasize - illcsize);
+                if ( iDatasize > 0 )
+                {
+                    memcpy( (BYTE*)pLCSBAF2+27, (BYTE*)pEthFrame+17, iDatasize );
+
+                    pLCSIBH->iDataLen += iDatasize;
+
+                    FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+                    hwLenBaf2 += iDatasize;
+                    STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
+
+                    FETCH_HW( hwOffset, pLCSHDR->hwOffset );
+                    hwOffset += iDatasize;
+                    STORE_HW( pLCSHDR->hwOffset, hwOffset );
+                }
+
+                // Add a padding byte to the buffer, if necessary.
+                if  ( pLCSIBH->iDataLen & 0x01 )
+                {
+                    pLCSIBH->iDataLen++;
+
+                    hwOffset++;
+                    STORE_HW( pLCSHDR->hwOffset, hwOffset );
+                }
+
+                // Add the buffer containing the reply to the chain.
+                add_buffer_to_chain( pLCSDEV, pLCSIBH );
+
+                fAttnRequired = TRUE;
 
             }
             else  // Command.
@@ -5546,7 +5688,33 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
             if (llc.fwSSAP_CR)  // Response
             {
 
-                /*FixMe!*/
+                // XID response, find the connection block.
+                pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
+
+                // Obtain a buffer in which to construct the data to be passed to VTAM.
+                pLCSIBH = alloc_lcs_buffer( pLCSDEV, (((INBOUND_4C25_SIZE+9)/10)*10)+10 );
+
+                memcpy( &pLCSIBH->bData, Inbound_4C25, INBOUND_4C25_SIZE );
+                pLCSIBH->iDataLen = INBOUND_4C25_SIZE;
+
+                pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+                pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+                FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+                FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+                pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+                //
+                pLCSCONN->hwXIDSeqNum++;
+                STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
+
+                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame+0, IFHWADDRLEN );  // Copy destination MAC address
+                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame+6, IFHWADDRLEN );  // Copy source MAC address
+                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame+14, 3 );           // Copy LLC
+
+                // Add the buffer containing the reply to the chain.
+                add_buffer_to_chain( pLCSDEV, pLCSIBH );
+
+                fAttnRequired = TRUE;
 
             }
             else  // Command.
@@ -5558,7 +5726,7 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
 
         // Unnumbered Frame: Unknown.
         default:
-            goto freebuf_msg970_return;
+            goto msg970_return;
 
         }
 
@@ -5566,16 +5734,46 @@ static const BYTE Inbound_4D10[Inbound_4D10_Size] =
 
     // Unknown frame. This should not occur!
     default:
-        goto freebuf_msg970_return;
+        goto msg970_return;
 
     }
 
+    if (fAttnRequired)
+    {
+        // It would have been nice to have simply called function
+        // device_attention at this point, but the channel program
+        // is still considered to be busy, and a return code of one
+        // would be returned to us.
 
-//  memcpy(&pLCSBAF2->hwSeqNum, &pOutBAF2->hwSeqNum, sizeof(pLCSBAF2->hwSeqNum));
+        /* Create an LCSATTN block */
+        pLCSATTN = malloc( sizeof( LCSATTN ) );
+        if (!pLCSATTN) return;  /* FixMe! Produce a message? */
+        pLCSATTN->pNext = NULL;
+        pLCSATTN->pDevice = pLCSDEV;
 
+        /* Add LCSATTN block to start of chain */
+        PTT_DEBUG( "GET  AttnLock", 000, pDEVBLK->devnum, 000 );
+        obtain_lock( &pLCSBLK->AttnLock );
+        PTT_DEBUG( "GOT  AttnLock", 000, pDEVBLK->devnum, 000 );
+        {
+            PTT_DEBUG( "ADD  Attn", pLCSATTN, pDEVBLK->devnum, 000 );
+            pLCSATTN->pNext = pLCSBLK->pAttns;
+            pLCSBLK->pAttns = pLCSATTN;
+        }
+        PTT_DEBUG( "REL  AttnLock", 000, pDEVBLK->devnum, 000 );
+        release_lock( &pLCSBLK->AttnLock );
 
-//  add_buffer_to_chain( pLCSDEV, pLCSIBH );
-    free (pLCSIBH);
+        /* Signal the LCS_AttnThread to process the LCSATTN block(s) on the chain */
+        PTT_DEBUG( "GET  AttnEventLock ", 000, pDEVBLK->devnum, 000 );
+        obtain_lock( &pLCSBLK->AttnEventLock );
+        PTT_DEBUG( "GOT  AttnEventLock ", 000, pDEVBLK->devnum, 000 );
+        {
+            PTT_DEBUG( "SIG  AttnEvent", 000, pDEVBLK->devnum, 000 );
+            signal_condition( &pLCSBLK->AttnEvent );
+        }
+        PTT_DEBUG( "REL  AttnEventLock ", 000, pDEVBLK->devnum, 000 );
+        release_lock( &pLCSBLK->AttnEventLock );
+    }
 
     return;
 
@@ -6122,9 +6320,8 @@ int  BuildLLC( PLLC pLLC, BYTE* pStart )
 
 
 /* ------------------------------------------------------------------ */
-/* alloc_lcs_buffer(): Allocate storage for a LCSIBH and data         */
+/* alloc_lcs_buffer(): Allocate storage for an LCSIBH and data        */
 /* ------------------------------------------------------------------ */
-
 PLCSIBH  alloc_lcs_buffer( PLCSDEV pLCSDEV, int iSize )
 {
     DEVBLK*    pDEVBLK;
@@ -6134,7 +6331,7 @@ PLCSIBH  alloc_lcs_buffer( PLCSDEV pLCSDEV, int iSize )
 
 
     // Allocate the buffer.
-    iBufLen = SIZE_IBH + iSize;
+    iBufLen = iSize + sizeof(LCSIBH);
     pLCSIBH = malloc( iBufLen );       // Allocate the buffer
     if (!pLCSIBH)                      // if the allocate was not successful...
     {
@@ -6154,12 +6351,10 @@ PLCSIBH  alloc_lcs_buffer( PLCSDEV pLCSDEV, int iSize )
     return pLCSIBH;
 }
 
-
 /* ------------------------------------------------------------------ */
 /* add_buffer_to_chain(): Add LCSIBH to end of chain.                 */
 /* ------------------------------------------------------------------ */
-
-void     add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH )
+void  add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH )
 {
 
     // Prepare LCSIBH for adding to chain.
@@ -6167,8 +6362,8 @@ void     add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH )
         return;
     pLCSIBH->pNextLCSIBH = NULL;                       // Clear the pointer to next LCSIBH
 
-    // Obtain the path chain lock.
-    obtain_lock( &pLCSDEV->DevChainLock );
+    // Obtain the buffer chain lock.
+    obtain_lock( &pLCSDEV->LCSIBHChainLock );
 
     // Add LCSIBH to end of chain.
     if (pLCSDEV->pFirstLCSIBH)                         // if there are already LCSIBHs
@@ -6184,8 +6379,8 @@ void     add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH )
         pLCSDEV->iNumLCSIBH = 1;                       // on the chain
     }
 
-    // Release the path chain lock.
-    release_lock( &pLCSDEV->DevChainLock );
+    // Release the buffer chain lock.
+    release_lock( &pLCSDEV->LCSIBHChainLock );
 
     return;
 }
@@ -6193,13 +6388,12 @@ void     add_buffer_to_chain( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH )
 /* ------------------------------------------------------------------ */
 /* remove_buffer_from_chain(): Remove LCSIBH from start of chain.     */
 /* ------------------------------------------------------------------ */
-
 PLCSIBH  remove_buffer_from_chain( PLCSDEV pLCSDEV )
 {
     PLCSIBH    pLCSIBH;                                // LCSIBH
 
-    // Obtain the path chain lock.
-    obtain_lock( &pLCSDEV->DevChainLock );
+    // Obtain the buffer chain lock.
+    obtain_lock( &pLCSDEV->LCSIBHChainLock );
 
     // Point to first LCSIBH on the chain.
     pLCSIBH = pLCSDEV->pFirstLCSIBH;                   // Pointer to first LCSIBH
@@ -6209,17 +6403,17 @@ PLCSIBH  remove_buffer_from_chain( PLCSDEV pLCSDEV )
     {
         pLCSDEV->pFirstLCSIBH = pLCSIBH->pNextLCSIBH;  // Make the next the first LCSIBH
         pLCSDEV->iNumLCSIBH--;                         // Decrement number of LCSIBHs
-        pLCSIBH->pNextLCSIBH = NULL;                   // Clear the pointer to next LCSIBH
         if (!pLCSDEV->pFirstLCSIBH)                    // if there are no more LCSIBHs
         {
 //          pLCSDEV->pFirstLCSIBH = NULL;              // Clear
             pLCSDEV->pLastLCSIBH = NULL;               // the chain
             pLCSDEV->iNumLCSIBH = 0;                   // pointers and count
         }
+        pLCSIBH->pNextLCSIBH = NULL;                   // Clear the pointer to next LCSIBH
     }
 
-    // Release the path chain lock.
-    release_lock( &pLCSDEV->DevChainLock );
+    // Release the buffer chain lock.
+    release_lock( &pLCSDEV->LCSIBHChainLock );
 
     return pLCSIBH;
 }
@@ -6227,20 +6421,19 @@ PLCSIBH  remove_buffer_from_chain( PLCSDEV pLCSDEV )
 /* ------------------------------------------------------------------ */
 /* remove_and_free_any_buffers_on_chain(): Remove and free LCSIBHs.   */
 /* ------------------------------------------------------------------ */
-
-void*    remove_and_free_any_buffers_on_chain( LCSDEV* pLCSDEV )
+void  remove_and_free_any_buffers_on_chain( PLCSDEV pLCSDEV )
 {
     PLCSIBH    pLCSIBH;                                // LCSIBH
 
-    // Obtain the path chain lock.
-    obtain_lock( &pLCSDEV->DevChainLock );
+    // Obtain the buffer chain lock.
+    obtain_lock( &pLCSDEV->LCSIBHChainLock );
 
     // Remove and free the first LCSIBH on the chain, if there is one...
-    while( pLCSDEV->pFirstLCSIBH != NULL )
+    while(pLCSDEV->pFirstLCSIBH)
     {
         pLCSIBH = pLCSDEV->pFirstLCSIBH;               // Pointer to first LCSIBH
         pLCSDEV->pFirstLCSIBH = pLCSIBH->pNextLCSIBH;  // Make the next the first LCSIBH
-        free( pLCSIBH );                               // Free the message buffer
+        free( pLCSIBH );                               // Free the buffer
     }
 
     // Reset the chain pointers.
@@ -6248,11 +6441,211 @@ void*    remove_and_free_any_buffers_on_chain( LCSDEV* pLCSDEV )
     pLCSDEV->pLastLCSIBH = NULL;                       // the chain
     pLCSDEV->iNumLCSIBH = 0;                           // pointers and count
 
-    // Release the path chain lock.
-    release_lock( &pLCSDEV->DevChainLock );
+    // Release the buffer chain lock.
+    release_lock( &pLCSDEV->LCSIBHChainLock );
 
-    return NULL;
+    return;
+}
 
+
+/* ------------------------------------------------------------------ */
+/* alloc_lcs_connection(): Allocate storage for an LCSCONN            */
+/* ------------------------------------------------------------------ */
+PLCSCONN  alloc_lcs_connection( PLCSDEV pLCSDEV )
+{
+    DEVBLK*    pDEVBLK;
+    PLCSCONN   pLCSCONN;               // LCSCONN
+    int        iConnLen;               // LCSCONN length
+    char       etext[40];              // malloc error text
+
+
+    // Allocate the connection.
+    iConnLen = sizeof(LCSCONN);
+    pLCSCONN = malloc( iConnLen );         // Allocate the connection
+    if (!pLCSCONN)                         // if the allocate was not successful...
+    {
+        pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+        // Report the bad news.
+        MSGBUF( etext, "malloc(%n)", &iConnLen );
+        // HHC00900 "%1d:%04X %s: error in function %s: %s"
+        WRMSG(HHC00900, "E", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                             etext, strerror(errno) );
+        return NULL;
+    }
+
+    // Clear the connection.
+    memset( pLCSCONN, 0, iConnLen );
+
+    return pLCSCONN;
+}
+
+/* ------------------------------------------------------------------ */
+/* add_connection_to_chain(): Add LCSCONN to end of chain.            */
+/* ------------------------------------------------------------------ */
+void  add_connection_to_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN )
+{
+
+    // Obtain the connection chain lock.
+    obtain_lock( &pLCSDEV->LCSCONNChainLock );
+
+    // Prepare LCSCONN for adding to chain.
+    if (!pLCSCONN)                                       // Any LCSCONN been passed?
+        goto release_add_connection_chain_lock;          // No, the caller is a fool
+    pLCSCONN->pNextLCSCONN = NULL;                       // Clear the pointer to next LCSCONN
+
+    // Add LCSCONN to end of chain.
+    if (pLCSDEV->pFirstLCSCONN)                          // if there are already LCSCONNs
+    {
+        pLCSDEV->pLastLCSCONN->pNextLCSCONN = pLCSCONN;  // Add the LCSCONN to
+        pLCSDEV->pLastLCSCONN = pLCSCONN;                // the end of the chain
+        pLCSDEV->iNumLCSCONN++;                          // Increment number of LCSCONNs
+    }
+    else
+    {
+        pLCSDEV->pFirstLCSCONN = pLCSCONN;               // Make the LCSCONN
+        pLCSDEV->pLastLCSCONN = pLCSCONN;                // the only LCSCONN
+        pLCSDEV->iNumLCSCONN = 1;                        // on the chain
+    }
+
+release_add_connection_chain_lock:
+
+    // Release the connection chain lock.
+    release_lock( &pLCSDEV->LCSCONNChainLock );
+
+    return;
+}
+
+/* ------------------------------------------------------------------ */
+/* find_connection_by_mac_addresseses(): Find LCSCONN.                */
+/* ------------------------------------------------------------------ */
+PLCSCONN  find_connection_by_mac_addresses( PLCSDEV pLCSDEV, MAC* pMAC1, MAC* pMAC2 )
+{
+    PLCSCONN   pLCSCONN;
+
+    // Locate the LCSCONN on the chain.
+    for (pLCSCONN = pLCSDEV->pFirstLCSCONN; pLCSCONN; pLCSCONN = pLCSCONN->pNextLCSCONN)
+    {
+        if ( ( memcmp( pLCSCONN->bLocalMAC, pMAC1, IFHWADDRLEN ) == 0 ) &&
+             ( memcmp( pLCSCONN->bRemoteMAC, pMAC2, IFHWADDRLEN ) == 0 ) )
+        {
+            break;
+        }
+        if ( ( memcmp( pLCSCONN->bRemoteMAC, pMAC1, IFHWADDRLEN ) == 0 ) &&
+             ( memcmp( pLCSCONN->bLocalMAC, pMAC2, IFHWADDRLEN ) == 0 ) )
+        {
+            break;
+        }
+    }
+
+    return pLCSCONN;
+}
+
+/* ------------------------------------------------------------------ */
+/* find_connection_by_connection_id(): Find LCSCONN.                  */
+/* ------------------------------------------------------------------ */
+PLCSCONN  find_connection_by_connection_id( PLCSDEV pLCSDEV, BYTE* pConnID )
+{
+    PLCSCONN   pLCSCONN;
+
+    // Locate the LCSCONN on the chain.
+    for (pLCSCONN = pLCSDEV->pFirstLCSCONN; pLCSCONN; pLCSCONN = pLCSCONN->pNextLCSCONN)
+    {
+        if ( memcmp( pLCSCONN->bConnectionId, pConnID, sizeof(pLCSCONN->bConnectionId) ) == 0 )
+        {
+            break;
+        }
+    }
+
+    return pLCSCONN;
+}
+
+/* ------------------------------------------------------------------ */
+/* remove_connection_from_chain(): Remove LCSCONN from chain.         */
+/* ------------------------------------------------------------------ */
+void  remove_connection_from_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN )
+{
+    PLCSCONN   pPrevLCSCONN = NULL;
+    PLCSCONN   pCurrLCSCONN = NULL;
+
+    // Obtain the connection chain lock.
+    obtain_lock( &pLCSDEV->LCSCONNChainLock );
+
+    // Prepare LCSCONN for removing from chain.
+    if (!pLCSCONN)                                    // Any LCSCONN been passed?
+        goto release_remove_connection_chain_lock;    // No, the caller is a fool
+
+    // Locate the LCSCONN on the chain.
+    for (pCurrLCSCONN = pLCSDEV->pFirstLCSCONN; pCurrLCSCONN; pCurrLCSCONN = pCurrLCSCONN->pNextLCSCONN)
+    {
+        if (pCurrLCSCONN == pLCSCONN)
+        {
+            break;
+        }
+        pPrevLCSCONN = pCurrLCSCONN;                  // Make current the previous
+    }
+    if (!pCurrLCSCONN)                                // Located the LCSCONN?
+        goto release_remove_connection_chain_lock;    // No, the caller is a fool
+
+    // Remove the LCSCONN from the chain.
+    if (!pPrevLCSCONN)
+    {
+        // Remove the LCSCONN from the start of the chain.
+        pLCSDEV->pFirstLCSCONN = pLCSCONN->pNextLCSCONN;   // Make the next the first LCSCONN
+        pLCSDEV->iNumLCSCONN--;                            // Decrement number of LCSCONNs
+        if (!pLCSDEV->pFirstLCSCONN)                       // Removed the only LCSCONN?
+        {
+//          pLCSDEV->pFirstLCSCONN = NULL;                 // Clear
+            pLCSDEV->pLastLCSCONN = NULL;                  // the chain
+            pLCSDEV->iNumLCSCONN = 0;                      // pointers and count
+        }
+    }
+    else
+    {
+        // Remove the LCSCONN from the middle or the end of the chain.
+        pLCSDEV->iNumLCSCONN--;                                 // Decrement number of LCSCONNs
+        pPrevLCSCONN->pNextLCSCONN = pLCSCONN->pNextLCSCONN;    // Make the previous point to the next
+        if (!pPrevLCSCONN->pNextLCSCONN)                        // Removed the last LCSCONN?
+        {
+            pLCSDEV->pLastLCSCONN = pPrevLCSCONN;               // Make the previous the last LCSCONN
+        }
+    }
+    pLCSCONN->pNextLCSCONN = NULL;                         // Clear the pointer to next LCSCONN
+
+release_remove_connection_chain_lock:
+
+    // Release the connection chain lock.
+    release_lock( &pLCSDEV->LCSCONNChainLock );
+
+    return;
+}
+
+/* ------------------------------------------------------------------ */
+/* remove_and_free_any_connections_on_chain(): Remove & free LCSCONNs */
+/* ------------------------------------------------------------------ */
+void  remove_and_free_any_connections_on_chain( PLCSDEV pLCSDEV )
+{
+    PLCSCONN    pLCSCONN;
+
+    // Obtain the connection chain lock.
+    obtain_lock( &pLCSDEV->LCSCONNChainLock );
+
+    // Remove and free the first LCSCONN on the chain, if there is one...
+    while( pLCSDEV->pFirstLCSCONN )
+    {
+        pLCSCONN = pLCSDEV->pFirstLCSCONN;                 // Pointer to first LCSCONN
+        pLCSDEV->pFirstLCSCONN = pLCSCONN->pNextLCSCONN;   // Make the next the first LCSCONN
+        free( pLCSCONN );                                  // Free the connection
+    }
+
+    // Reset the chain pointers.
+    pLCSDEV->pFirstLCSCONN = NULL;                         // Clear
+    pLCSDEV->pLastLCSCONN = NULL;                          // the chain
+    pLCSDEV->iNumLCSCONN = 0;                              // pointers and count
+
+    // Release the connection chain lock.
+    release_lock( &pLCSDEV->LCSCONNChainLock );
+
+    return;
 }
 
 
