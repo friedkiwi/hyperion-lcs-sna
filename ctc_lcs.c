@@ -18,7 +18,7 @@
 #include "opcode.h"
 #include "herc_getopt.h"
 
-#define MAX_TRACE_LEN 128
+#define MAX_TRACE_LEN 256
 
 //-----------------------------------------------------------------------------
 //  DEBUGGING: use 'ENABLE_TRACING_STMTS' to activate the compile-time
@@ -4091,11 +4091,11 @@ static void*  LCS_AttnThread( void* arg)
                 // Wait an (increasingly) small amount of time.
                 usleep(interval);
 
-// ???          // is there still something in our frame buffer?
-// ???          if (!pLCSDEV->fDataPending && !pLCSDEV->fReplyPending)
-// ???          {
-// ???              break;
-// ???          }
+//??            // is there still something in our frame buffer?
+//??            if (!pLCSDEV->fDataPending && !pLCSDEV->fReplyPending)
+//??            {
+//??                break;
+//??            }
 
                 // Raise Attention
                 dev_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
@@ -4254,13 +4254,13 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
             PTT_DEBUG( "WSNA: OCTL & data ", -1, pDEVBLK->devnum, -1 );
 
-            // Trace received command frame...
-            if (pLCSBLK->fDebug)
-            {                                                                          /* FixMe! Remove! */
-                // HHC03983 "%1d:%04X %s: %s"
-                WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
-                                                             "lcs OCTL and data received" );
-            }                                                                          /* FixMe! Remove! */
+//??        // Trace received command frame...
+//??        if (pLCSBLK->fDebug)
+//??        {                                                                          /* FixMe! Remove! */
+//??            // HHC03983 "%1d:%04X %s: %s"
+//??            WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+//??                                                         "lcs OCTL and data received" );
+//??        }                                                                          /* FixMe! Remove! */
 
             //
             while (1)
@@ -4291,14 +4291,14 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
                     PTT_DEBUG( "WSNA: Baffle 1    ", -1, pDEVBLK->devnum, -1 );
 
-                    // Trace received command frame...
-                    if (pLCSBLK->fDebug)
-                    {                                                                          /* FixMe! Remove! */
-                        // HHC03983 "%1d:%04X %s: %s"
-                        WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
-                                                                     "lcs baffle thingy received" );
-                        net_data_trace( pDEVBLK, (BYTE*)pLCSHDR, hwLength, '<', 'D', "baffle", 0 );
-                    }                                                                          /* FixMe! Remove! */
+//??                // Trace received command frame...
+//??                if (pLCSBLK->fDebug)
+//??                {                                                                          /* FixMe! Remove! */
+//??                    // HHC03983 "%1d:%04X %s: %s"
+//??                    WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+//??                                                                 "lcs baffle thingy received" );
+//??                    net_data_trace( pDEVBLK, (BYTE*)pLCSHDR, hwLength, '<', 'D', "baffle", 0 );
+//??                }                                                                          /* FixMe! Remove! */
 
                     // Point to and get length of the LCSBAF1/LCSBAF2 structures.
                     pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
@@ -4370,33 +4370,33 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
                     PTT_DEBUG( "WSNA: Cmd frame O ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
 
-                    // Trace received command frame...
-                    if (pLCSBLK->fDebug)
-                    {
-                        // "%1d:%04X CTC: lcs command packet received"
-                        WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
-                        net_data_trace( pDEVBLK, (BYTE*)pCmdFrame, hwLength, '<', 'D', "command", 0 );
-                    }
+//??                // Trace received command frame...
+//??                if (pLCSBLK->fDebug)
+//??                {
+//??                    // "%1d:%04X CTC: lcs command packet received"
+//??                    WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
+//??                    net_data_trace( pDEVBLK, (BYTE*)pCmdFrame, hwLength, '<', 'D', "command", 0 );
+//??                }
 
                     switch (pCmdFrame->bCmdCode)
                     {
                         //  HHC00933  =  "%1d:%04X CTC: executing command %s"
 
-// ??               case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
-// ??                   PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-// ??                   if (pLCSBLK->fDebug)
-// ??                       WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
-// ??                   LCS_StartLan_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
-// ??                   pLCSDEV->fAttnRequired = TRUE;
-// ??                   break;
+//??                case LCS_CMD_STRTLAN_SNA:   // Start LAN SNA
+//??                    PTT_DEBUG( "CMD=Start LAN SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+//??                    if (pLCSBLK->fDebug)
+//??                        WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "start lan sna" );
+//??                    LCS_StartLan_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
+//??                    pLCSDEV->fAttnRequired = TRUE;
+//??                    break;
 
-// ??               case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
-// ??                   PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-// ??                   if (pLCSBLK->fDebug)
-// ??                       WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
-// ??                   LCS_LanStats_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
-// ??                   pLCSDEV->fAttnRequired = TRUE;
-// ??                   break;
+//??                case LCS_CMD_LANSTAT_SNA:   // LAN Stats SNA
+//??                    PTT_DEBUG( "CMD=LAN Stats SNA ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+//??                    if (pLCSBLK->fDebug)
+//??                        WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "lan statistics sna" );
+//??                    LCS_LanStats_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
+//??                    pLCSDEV->fAttnRequired = TRUE;
+//??                    break;
 
                     case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
                         PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
@@ -4429,7 +4429,7 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
                     ASSERT( FALSE );
                     pDEVBLK->sense[0] = SENSE_EC;
                     *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
-            // ??   LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
+//??                LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
                     PTT_TIMING( "end write",  0, 0, 0 );
                     PTT_DEBUG( "WSNA EXIT         ", 000, pDEVBLK->devnum, -1 );
                     return;
@@ -4446,13 +4446,13 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
             PTT_DEBUG( "WSNA: OCTL only   ", -1, pDEVBLK->devnum, -1 );
 
-            // Trace received OCTL...
-            if (pLCSBLK->fDebug)
-            {                                                                          /* FixMe! Remove! */
-                // HHC03983 "%1d:%04X %s: %s"
-                WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
-                                                                 "lcs OCTL only received" );
-            }                                                                          /* FixMe! Remove! */
+//??        // Trace received OCTL...
+//??        if (pLCSBLK->fDebug)
+//??        {                                                                          /* FixMe! Remove! */
+//??            // HHC03983 "%1d:%04X %s: %s"
+//??            WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+//??                                                             "lcs OCTL only received" );
+//??        }                                                                          /* FixMe! Remove! */
 
         }
 
@@ -4497,13 +4497,13 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
         PTT_DEBUG( "WSNA: command     ", -1, pDEVBLK->devnum, -1 );
 
-        // Trace received command frame...
-        if (pLCSBLK->fDebug)
-        {                                                                          /* FixMe! Remove! */
-            // HHC03983 "%1d:%04X %s: %s"
-            WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
-                                                               "lcs command received" );
-        }                                                                          /* FixMe! Remove! */
+//??    // Trace received command frame...
+//??    if (pLCSBLK->fDebug)
+//??    {                                                                          /* FixMe! Remove! */
+//??        // HHC03983 "%1d:%04X %s: %s"
+//??        WRMSG( HHC03983, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum, "LCS",
+//??                                                           "lcs command received" );
+//??    }                                                                          /* FixMe! Remove! */
 
         //
         while (1)
@@ -4535,13 +4535,13 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
                 PTT_DEBUG( "WSNA: Cmd frame   ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
 
-                // Trace received command frame...
-                if (pLCSBLK->fDebug)
-                {
-                    // "%1d:%04X CTC: lcs command packet received"
-                    WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
-                    net_data_trace( pDEVBLK, (BYTE*)pCmdFrame, (int)hwLength, '<', 'D', "command", 0 );
-                }
+//??            // Trace received command frame...
+//??            if (pLCSBLK->fDebug)
+//??            {
+//??                // "%1d:%04X CTC: lcs command packet received"
+//??                WRMSG( HHC00922, "D", SSID_TO_LCSS( pDEVBLK->ssid ), pDEVBLK->devnum );
+//??                net_data_trace( pDEVBLK, (BYTE*)pCmdFrame, (int)hwLength, '<', 'D', "command", 0 );
+//??            }
 
                 switch (pCmdFrame->bCmdCode)
                 {
@@ -4564,14 +4564,14 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
                     pLCSDEV->fAcceptPackets = TRUE;
                     break;
 
-// ??           case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
-// ??               PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
-// ??               if (pLCSBLK->fDebug)
-// ??                   WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
-// ??               LCS_StopLan_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
-// ??               pLCSDEV->fAttnRequired = TRUE;
-// ??               pLCSDEV->fAcceptPackets = FALSE;
-// ??               break;
+//??            case LCS_CMD_STOPLAN_SNA:   // Stop LAN SNA
+//??                PTT_DEBUG( "CMD=Stop LAN SNA  ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
+//??                if (pLCSBLK->fDebug)
+//??                    WRMSG( HHC00933, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, "stop lan sna" );
+//??                LCS_StopLan_SNA( pLCSDEV, pCmdFrame, (int)hwLength );
+//??                pLCSDEV->fAttnRequired = TRUE;
+//??                pLCSDEV->fAcceptPackets = FALSE;
+//??                break;
 
                 default:
                     PTT_DEBUG( "*CMD=Unsupported! ", pCmdFrame->bCmdCode, pDEVBLK->devnum, -1 );
@@ -4596,7 +4596,7 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
                 ASSERT( FALSE );
                 pDEVBLK->sense[0] = SENSE_EC;
                 *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
-         // ??  LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
+//??            LCS_EndMWrite( pDEVBLK, nEthBytes, nEthFrames );
                 PTT_TIMING( "end write",  0, 0, 0 );
                 PTT_DEBUG( "WSNA EXIT         ", 000, pDEVBLK->devnum, -1 );
                 return;
@@ -4677,8 +4677,8 @@ static const BYTE Inbound_CC0A[INBOUND_CC0A_SIZE] =
 #endif
     memcpy( pLCSCONN->bRemoteMAC, (BYTE*)pOutBAF2+3, IFHWADDRLEN );
 
-    if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
+    if (pLCSDEV->pLCSBLK->fDebug)                                                                    /* FixMe! Remove! */
+        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "create LCSCONN", 0 );  /* FixMe! Remove! */
 
     pLCSIBH = alloc_lcs_buffer( pLCSDEV, (((INBOUND_CC0A_SIZE+9)/10)*10)+10 );
     pInHDR = (PLCSHDR)&pLCSIBH->bData;
@@ -4722,27 +4722,32 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
     PLCSCONN  pLCSCONN;
-    BYTE*     pEthFrame;
+    PETHFRM   pEthFrame;
     int       iEthLen;
     BYTE      frame[64];
 
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-    pEthFrame = &frame[0];
-    iEthLen = 60;
-
-    // Construct Ethernet frame
-    memcpy( pEthFrame+0, (BYTE*)pLCSBAF2+11, IFHWADDRLEN );  // Copy destination MAC address
-    memcpy( pEthFrame+6, (BYTE*)pLCSBAF2+17, IFHWADDRLEN );  // Copy source MAC address
-    STORE_HW( pEthFrame+12, 0x0003 );                        // Set data length
-    memcpy( pEthFrame+14, (BYTE*)pLCSBAF2+23, 3 );           // Copy LLC
-    pEthFrame[16] = 0xF3;                                    // Set LLC = TEST
-    memset( pEthFrame+17, 0, 47 );                           // Clear remainder
+    pEthFrame = (PETHFRM)&frame[0];
+    iEthLen = 60;                                                    // Minimum ethernet frame length
 
     // XID command, find the connection block.
-    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV,(BYTE*)pLCSBAF2+11 &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
-    pLCSCONN->hwXIDCount++;
+    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, (MAC*)((BYTE*)pLCSBAF2+11), (MAC*)((BYTE*)pLCSBAF2+17) );
+
+    if (pLCSDEV->pLCSBLK->fDebug)                                                                   /* FixMe! Remove! */
+        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "found LCSCONN", 0 );  /* FixMe! Remove! */
+
+    // Construct Ethernet frame
+    memcpy( pEthFrame->bDestMAC, (BYTE*)pLCSBAF2+11, IFHWADDRLEN );  // Copy destination MAC address
+    memcpy( pEthFrame->bSrcMAC, (BYTE*)pLCSBAF2+17, IFHWADDRLEN );   // Copy source MAC address
+    STORE_HW( pEthFrame->hwEthernetType, 0x0003 );                   // Set data length
+    memcpy( pEthFrame->bData, (BYTE*)pLCSBAF2+23, 2 );               // Copy LLC DSAP & SSAP
+    pEthFrame->bData[2] = 0xF3;                                      // Set LLC Control = TEST
+    memset( &pEthFrame->bData[3], 0, 43 );                           // Clear remainder
+
+//??    // XID command, find the connection block.
+//??    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4750,7 +4755,7 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
         // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
         WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                              pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
-        net_data_trace( pDEVBLK, pEthFrame, iEthLen, '<', 'D', "eth frame", 0 );
+        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iEthLen, '<', 'D', "eth frame", 0 );
     }
 
     // Write the Ethernet frame to the TAP device
@@ -4784,7 +4789,6 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     UNREFERENCED( pLCSHDR   );
     UNREFERENCED( pLCSBAF1  );
     UNREFERENCED( hwLenBaf1 );
-    UNREFERENCED( hwLenBaf2 );
 //                                          DMAC         SMAC         LLC ?  TH etc.
 //  6004400000DC00   0100000000030408000000 000CCE4B4740 400074700001 040400 xxxxxxxx...........
 //  0 1 2 3 4 5 6    0 1 2 3 4 5 6 7 8 9 A  B C D E F 0  1 2 3 4 5 6  7 8 9  A B C D E F 0 1 ...
@@ -4792,46 +4796,52 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
     PLCSCONN  pLCSCONN;
-    BYTE*     pEthFrame;
+    PETHFRM   pEthFrame;
     int       iEthLen;
-    int       iTHetcLen;
+    int       iXID3andCVlen;
     int       iTraceLen;
     BYTE      frame[512];
 
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
     pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-    pEthFrame = &frame[0];
-    iEthLen = 60;
+    pEthFrame = (PETHFRM)&frame[0];
+    iEthLen = 60;                                                    // Minimum ethernet frame length
+
+    // XID command, find the connection block.
+    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, (MAC*)((BYTE*)pLCSBAF2+11), (MAC*)((BYTE*)pLCSBAF2+17) );
+
+    if (pLCSDEV->pLCSBLK->fDebug)                                                                   /* FixMe! Remove! */
+        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "found LCSCONN", 0 );  /* FixMe! Remove! */
 
     // Construct Ethernet frame
-    memcpy( pEthFrame+0, (BYTE*)pLCSBAF2+11, IFHWADDRLEN );     // Copy destination MAC address
-    memcpy( pEthFrame+6, (BYTE*)pLCSBAF2+17, IFHWADDRLEN );     // Copy source MAC address
-    STORE_HW( pEthFrame+12, 3 );                                // Set data length
-    memcpy( pEthFrame+14, (BYTE*)pLCSBAF2+23, 3 );              // Copy LLC
-    pEthFrame[16] = 0xBF;                                       // Set LLC = XID
-    memset( pEthFrame+17, 0, 47 );                              // Clear to minimum length
+    memcpy( pEthFrame->bDestMAC, (BYTE*)pLCSBAF2+11, IFHWADDRLEN );  // Copy destination MAC address
+    memcpy( pEthFrame->bSrcMAC, (BYTE*)pLCSBAF2+17, IFHWADDRLEN );   // Copy source MAC address
+    STORE_HW( pEthFrame->hwEthernetType, 0x0003 );                   // Set data length
+    memcpy( pEthFrame->bData, (BYTE*)pLCSBAF2+23, 2 );               // Copy LLC DSAP & SSAP
+    pEthFrame->bData[2] = 0xBF;                                      // Set LLC Control = XID
+    memset( &pEthFrame->bData[3], 0, 43 );                           // Clear remainder
 
     // Continue Ethernet frame construction if there is a TH etc.
-    iTHetcLen = ( hwLenBaf2 - 26 );                             // Calculate length of TH etc
-    if ( iTHetcLen > 0 )                                        // Any TH etc?
+    iXID3andCVlen = ( hwLenBaf2 - 26 );                              // Calculate length of XID3 and CV's
+    if ( iXID3andCVlen > 0 )                                         // Any XID3 an CV's?
     {
-        STORE_HW( pEthFrame+12, ( 3 + iTHetcLen ) );            // Set data length
-        memcpy( pEthFrame+17, (BYTE*)pLCSBAF2+26, iTHetcLen );  // Copy TH, etc.
-        if ( iEthLen < (17 + iTHetcLen) )
+        STORE_HW( pEthFrame->hwEthernetType, ( 3 + iXID3andCVlen ) );      // Set LLC and XID3 and CV's length
+        memcpy( pEthFrame->bData+3, (BYTE*)pLCSBAF2+26, iXID3andCVlen );  // Copy XID3 and CV's.
+        if ( iEthLen < (17 + iXID3andCVlen) )
         {
-            iEthLen = (17 + iTHetcLen);
+            iEthLen = (17 + iXID3andCVlen);
         }
     }
 
     //
-    if ( iTHetcLen > 0 )                                        // Any TH etc?
+    if ( iXID3andCVlen > 0 )                                         // Any XID3 an CV's?
     {
-        // Extract vectors
+        /* FixMe!  Extract vectors */
     }
 
-    // XID command, find the connection block.
-    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV,(BYTE*)pLCSBAF2+11 &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
+//??    // XID command, find the connection block.
+//??    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4847,7 +4857,7 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
             WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
                                  iTraceLen, (iEthLen - iTraceLen) );
         }
-        net_data_trace( pDEVBLK, pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
+        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '<', 'D', "eth frame", 0 );
     }
 
     // Write the Ethernet frame to the TAP device
@@ -5629,9 +5639,9 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
 
                 // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
-                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame+0, IFHWADDRLEN );
-                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame+6, IFHWADDRLEN );
-                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame+14, 3 );
+                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame->bDestMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame->bSrcMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame->bData, 3 );
 
                 pLCSIBH->iDataLen += (6 + 6 + 3);
 
@@ -5643,11 +5653,11 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 hwOffset += (6 + 6 + 3);
                 STORE_HW( pLCSHDR->hwOffset, hwOffset );
 
-                // Copy the XID3 etc to the buffer.
+                // Copy the XID3 and CV's to the buffer.
                 iDatasize = (iLLCandDatasize - illcsize);
                 if ( iDatasize > 0 )
                 {
-                    memcpy( (BYTE*)pLCSBAF2+27, (BYTE*)pEthFrame+17, iDatasize );
+                    memcpy( (BYTE*)pLCSBAF2+27, (BYTE*)pEthFrame->bData+3, iDatasize );
 
                     pLCSIBH->iDataLen += iDatasize;
 
@@ -5707,9 +5717,9 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 pLCSCONN->hwXIDSeqNum++;
                 STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
 
-                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame+0, IFHWADDRLEN );  // Copy destination MAC address
-                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame+6, IFHWADDRLEN );  // Copy source MAC address
-                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame+14, 3 );           // Copy LLC
+                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame->bDestMAC, IFHWADDRLEN );  // Copy destination MAC address
+                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame->bSrcMAC, IFHWADDRLEN );   // Copy source MAC address
+                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame->bData, 3 );               // Copy LLC
 
                 // Add the buffer containing the reply to the chain.
                 add_buffer_to_chain( pLCSDEV, pLCSIBH );
