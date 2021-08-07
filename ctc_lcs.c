@@ -4759,7 +4759,7 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     }
 
     // Write the Ethernet frame to the TAP device
-    if (TUNTAP_Write( pDEVBLK->fd, pEthFrame, iEthLen ) != iEthLen)
+    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
     {
 // FixMe!  Set error occurred flag in LCSDEV whuich is checked in LCS_Write_SNA
         PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
@@ -4861,7 +4861,7 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     }
 
     // Write the Ethernet frame to the TAP device
-    if (TUNTAP_Write( pDEVBLK->fd, pEthFrame, iEthLen ) != iEthLen)
+    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
     {
 // FixMe!  Set error occurred flag in LCSDEV whuich is checked in LCS_Write_SNA
         PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
