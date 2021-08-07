@@ -5639,9 +5639,9 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
 
                 // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
-                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame->bDestMAC, IFHWADDRLEN );
-                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame->bSrcMAC, IFHWADDRLEN );
-                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame->bData, 3 );
+                memcpy( (BYTE*)pLCSBAF2+12, pEthFrame->bDestMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+18, pEthFrame->bSrcMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+24, pEthFrame->bData, 3 );
 
                 pLCSIBH->iDataLen += (6 + 6 + 3);
 
@@ -5657,7 +5657,7 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 iDatasize = (iLLCandDatasize - illcsize);
                 if ( iDatasize > 0 )
                 {
-                    memcpy( (BYTE*)pLCSBAF2+27, (BYTE*)pEthFrame->bData+3, iDatasize );
+                    memcpy( (BYTE*)pLCSBAF2+27, pEthFrame->bData+3, iDatasize );
 
                     pLCSIBH->iDataLen += iDatasize;
 
@@ -5717,9 +5717,10 @@ static const BYTE Inbound_4D00_ConnId[INBOUND_4D00_CONNID_SIZE] =
                 pLCSCONN->hwXIDSeqNum++;
                 STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
 
-                memcpy( (BYTE*)pLCSBAF2+12, (BYTE*)pEthFrame->bDestMAC, IFHWADDRLEN );  // Copy destination MAC address
-                memcpy( (BYTE*)pLCSBAF2+18, (BYTE*)pEthFrame->bSrcMAC, IFHWADDRLEN );   // Copy source MAC address
-                memcpy( (BYTE*)pLCSBAF2+24, (BYTE*)pEthFrame->bData, 3 );               // Copy LLC
+                // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
+                memcpy( (BYTE*)pLCSBAF2+12, pEthFrame->bDestMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+18, pEthFrame->bSrcMAC, IFHWADDRLEN );
+                memcpy( (BYTE*)pLCSBAF2+24, pEthFrame->bData, 3 );
 
                 // Add the buffer containing the reply to the chain.
                 add_buffer_to_chain( pLCSDEV, pLCSIBH );
