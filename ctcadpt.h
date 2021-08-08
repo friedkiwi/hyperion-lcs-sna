@@ -629,6 +629,7 @@ struct _LCSCONN                        // LCS SNA Connection
     MAC       bLocalMAC;               // Local MAC address
     MAC       bRemoteMAC;              // Remote MAC address
     BYTE      bConnectionId[5];        // Connection ID
+    BYTE      notused[3];              //
     U16       hwXIDSeqNum;             // XID Exchange Sequence number
     U16       hwDataSeqNum;            // Data Sequence number
     BYTE*     pLocalCPNameCV;          // Local CP Name Control Vector
@@ -697,12 +698,9 @@ struct  _LCSDEV
     LOCK        LCSIBHChainLock;        // SNA LCSIBH Chain LOCK
     PLCSIBH     pFirstLCSIBH;           // SNA First LCSIBH in chain
     PLCSIBH     pLastLCSIBH;            // SNA Last LCSIBH in chain
-    int         iNumLCSIBH;             // SNA Number of LCSIBHs on chain
 
     LOCK        LCSCONNChainLock;       // SNA LCSCONN Chain LOCK
     PLCSCONN    pFirstLCSCONN;          // SNA First LCSCONN in chain
-    PLCSCONN    pLastLCSCONN;           // SNA Last LCSCONN in chain
-    int         iNumLCSCONN;            // SNA Number of LCSCONNs on chain
 
     U16         iFrameOffset;           // Curr Offset into Buffer
     U16         iMaxFrameBufferSize;    // Device Buffer Size
@@ -1190,7 +1188,6 @@ struct _XID3                       /* XID3                           */
                                    /* Block number (12 bits),        */
                                    /* ID number (20-bits)            */
 /*006*/  BYTE   Reserved1[2];      /* Reserved                       */
-                                   /* of any control vectors         */
 /*008*/  BYTE   CharSend[2];       /* Characteristics of XID sender  */
 /*00A*/  BYTE   Byte10;            /*                                */
 /*00B*/  BYTE   Byte11;            /*                                */
