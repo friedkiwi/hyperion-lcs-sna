@@ -580,8 +580,8 @@ struct _LCSBAF1                        // LCS SNA baffle 1
     HWORD       hwLenBaf1;             //  0  Length of baffle 1
     HWORD       hwTypeBaf;             //  2  Type of baffle
     HWORD       hwLenBaf2;             //  4  Length of baffle 2
-    BYTE        bUnknown6;             //  6
-    BYTE        bUnknown7;             //  7
+    BYTE        bUnknown6;             //  6    bit value
+    BYTE        bUnknown7;             //  7    byte value
     BYTE        bUnknown8[4];          //  8
                                        //
     BYTE        bUnknown12[4];         //  C
@@ -626,10 +626,14 @@ struct _LCSIBH                         // LCS SNA Inbound Buffer Header
 struct _LCSCONN                        // LCS SNA Connection
 {
     PLCSCONN  pNextLCSCONN;            // Pointer to next LCSCONN
+    BYTE      bToken1[4];              // Token 1  XID out
+    BYTE      bToken2[4];              // Token 2  XID in
+    BYTE      bToken3[4];              // Token 3  Data out
+    BYTE      bToken4[4];              // Token 4  Data in
+    BYTE      bToken5[4];              // Token 5
+    BYTE      bToken6[4];              // Token 6
     MAC       bLocalMAC;               // Local MAC address
     MAC       bRemoteMAC;              // Remote MAC address
-    BYTE      bConnectionId[5];        // Connection ID
-    BYTE      notused[3];              //
     U16       hwXIDSeqNum;             // XID Exchange Sequence number
     U16       hwDataSeqNum;            // Data Sequence number
     BYTE*     pLocalCPNameCV;          // Local CP Name Control Vector

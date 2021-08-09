@@ -160,7 +160,7 @@ static void     free_lcs_buffer( PLCSDEV pLCSDEV, PLCSIBH pLCSIBH );
 static PLCSCONN alloc_connection( PLCSDEV pLCSDEV );
 static void     add_connection_to_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN );
 static PLCSCONN find_connection_by_mac_addresses( PLCSDEV pLCSDEV, MAC* pMAC1, MAC* pMAC2 );
-static PLCSCONN find_connection_by_connection_id( PLCSDEV pLCSDEV, BYTE* pConnID );
+static PLCSCONN find_connection_by_token_and_mac( PLCSDEV pLCSDEV, BYTE* pToken, int iWhichToken, MAC* pMAC, int iWhichMAC );
 static int      remove_connection_from_chain( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN );
 static void     remove_and_free_any_connections_on_chain( PLCSDEV pLCSDEV );
 static void     free_connection( PLCSDEV pLCSDEV, PLCSCONN pLCSCONN );
@@ -645,7 +645,6 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
                       BYTE*   pMore,   BYTE* pUnitStat,
                       U32*    pResidual )
 {
-    PLCSBLK         pLCSBLK;
     PLCSDEV         pLCSDEV;
     int             iNum;               // Number of bytes to move
     BYTE            bOpCode;            // CCW opcode with modifier
@@ -665,7 +664,6 @@ void  LCS_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
         *pUnitStat        = CSW_CE | CSW_DE | CSW_UC;
         return;  // (incomplete group?)
     }
-    pLCSBLK = pLCSDEV->pLCSBLK;
 
     // Intervention required if the device file is not open
     if (1
@@ -4629,16 +4627,10 @@ static const BYTE Inbound_CC0A[INBOUND_CC0A_SIZE] =
                  {
                    0x00, 0x24, 0x04, 0x00,                           /* LCSHDR  */
                    0x00, 0x1C, 0xCC, 0x0A, 0x00, 0x03, 0x60, 0x01,   /* LCSBAF1 */
-                   0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+                   0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
                    0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
                    0x40, 0x00, 0x02, 0x40,
                    0x01, 0xff, 0xff, 0x00                            /* LCSBAF2 */
-                 };
-
-#define CONNID_SIZE  5
-static const BYTE ConnId[CONNID_SIZE] =
-                 {
-                   0x40, 0x00, 0x02, 0x40, 0x00
                  };
 
     DEVBLK*     pDEVBLK;                                                                   /* FixMe! Remove! */
@@ -4651,6 +4643,7 @@ static const BYTE ConnId[CONNID_SIZE] =
     PLCSBAF2    pInBAF2;
     U16         hwLenInBaf1;
 //  U16         hwLenInBaf2;
+    U32         fwToken;
 
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];                                    /* FixMe! Remove! */
@@ -4659,7 +4652,14 @@ static const BYTE ConnId[CONNID_SIZE] =
     //
     pLCSCONN = alloc_connection( pLCSDEV );
 
-    memcpy( pLCSCONN->bConnectionId, ConnId, sizeof(pLCSCONN->bConnectionId) );
+    memcpy( pLCSCONN->bToken1,  pOutBAF1->bUnknown8, sizeof(pLCSCONN->bToken1) );   // XID out
+    memcpy( pLCSCONN->bToken2,  pOutBAF1->bUnknown12, sizeof(pLCSCONN->bToken2) );  // XID in
+    FETCH_FW( fwToken, pLCSCONN->bToken2 );
+    fwToken -= 0x00000100;
+    STORE_FW( pLCSCONN->bToken2, fwToken );
+    fwToken = 0x40000240;
+    STORE_FW( pLCSCONN->bToken3, fwToken );                                         // Data out
+    memcpy( pLCSCONN->bToken4,  pOutBAF1->bUnknown12, sizeof(pLCSCONN->bToken4) );  // Data in
 
     memcpy( pLCSCONN->bLocalMAC, pLCSPORT->MAC_Address, IFHWADDRLEN );
 #if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
@@ -4667,20 +4667,20 @@ static const BYTE ConnId[CONNID_SIZE] =
 #endif
     memcpy( pLCSCONN->bRemoteMAC, (BYTE*)pOutBAF2+3, IFHWADDRLEN );
 
-    pExistingLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pLCSCONN->bLocalMAC, &pLCSCONN->bRemoteMAC );
+    pExistingLCSCONN = find_connection_by_token_and_mac( pLCSDEV, pLCSCONN->bToken1, 1, &pLCSCONN->bRemoteMAC, 2 );  // XID out & remote MAC
     if (pExistingLCSCONN)
     {
-        if (pLCSDEV->pLCSBLK->fDebug)                                                                    /* FixMe! Remove! */
-            net_data_trace( pDEVBLK, (BYTE*)pExistingLCSCONN, sizeof(LCSCONN), ' ', 'D', "existing LCSCONN", 0 );  /* FixMe! Remove! */
+//??        if (pLCSDEV->pLCSBLK->fDebug)                                                                              /* FixMe! Remove! */
+//??            net_data_trace( pDEVBLK, (BYTE*)pExistingLCSCONN, sizeof(LCSCONN), ' ', 'D', "existing LCSCONN", 0 );  /* FixMe! Remove! */
         remove_connection_from_chain( pLCSDEV, pExistingLCSCONN );
         free_connection( pLCSDEV, pExistingLCSCONN );
         pExistingLCSCONN = NULL;
     }
 
-    add_connection_to_chain( pLCSDEV, pLCSCONN );
+//??    if (pLCSDEV->pLCSBLK->fDebug)                                                                     /* FixMe! Remove! */
+//??        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "created LCSCONN", 0 );  /* FixMe! Remove! */
 
-    if (pLCSDEV->pLCSBLK->fDebug)                                                                     /* FixMe! Remove! */
-        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "created LCSCONN", 0 );  /* FixMe! Remove! */
+    add_connection_to_chain( pLCSDEV, pLCSCONN );
 
     pLCSIBH = alloc_lcs_buffer( pLCSDEV, INBOUND_CC0A_SIZE + 10 );
 
@@ -4693,8 +4693,7 @@ static const BYTE ConnId[CONNID_SIZE] =
 //  FETCH_HW( hwLenInBaf2, pInBAF1->hwLenBaf2 );
     pInBAF2 = (PLCSBAF2)( (BYTE*)pInBAF1 + hwLenInBaf1 );
 
-    pInBAF1[10] = pOutBAF1[14];
-    pInBAF1[11] = pOutBAF1[15];
+    memcpy( pInBAF1->bUnknown8, pLCSCONN->bToken4, sizeof(pLCSCONN->bToken4) );     // Data in
 
     memcpy(&pInBAF2->hwSeqNum, &pOutBAF2->hwSeqNum, sizeof(pInBAF2->hwSeqNum));
 
@@ -4717,6 +4716,9 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     UNREFERENCED( pLCSBAF1  );
     UNREFERENCED( hwLenBaf1 );
     UNREFERENCED( hwLenBaf2 );
+//                   Token
+//  000D0C25001B6004 400000DC 00
+//  0 1 2 3 4 5 6 7  8 9 A B  C
 //                         DMAC         SMAC         LLC    Filler
 //  0100000000030000000000 000CCE4B4740 400074700001 000400 xx
 //  0 1 2 3 4 5 6 7 8 9 A  B C D E F 0  1 2 3 4 5 6  7 8 9
@@ -4735,7 +4737,7 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     iEthLen = 60;                                                    // Minimum ethernet frame length
 
     // XID command, find the connection block.
-    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, (MAC*)((BYTE*)pLCSBAF2+11), (MAC*)((BYTE*)pLCSBAF2+17) );
+    pLCSCONN = find_connection_by_token_and_mac( pLCSDEV, pLCSBAF1->bUnknown8, 1, (MAC*)((BYTE*)pLCSBAF2+11), 2 );   // XID out & remote MAC
 
 //??    if (pLCSDEV->pLCSBLK->fDebug)                                                                   /* FixMe! Remove! */
 //??        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "found LCSCONN", 0 );  /* FixMe! Remove! */
@@ -4747,9 +4749,6 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     memcpy( pEthFrame->bData, (BYTE*)pLCSBAF2+23, 3 );               // Copy LLC DSAP, SSAP and Control containing null.
     pEthFrame->bData[2] = 0xF3;                                      // Set LLC Control = TEST
     memset( &pEthFrame->bData[3], 0, 43 );                           // Clear remainder
-
-//??    // XID command, find the connection block.
-//??    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4791,6 +4790,9 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     UNREFERENCED( pLCSHDR   );
     UNREFERENCED( pLCSBAF1  );
     UNREFERENCED( hwLenBaf1 );
+//                   Token
+//  000D0C22001A6004 400000DC 00
+//  0 1 2 3 4 5 6 7  8 9 A B  C
 //                                          DMAC         SMAC         LLC ?  TH etc.
 //  6004400000DC00   0100000000030408000000 000CCE4B4740 400074700001 040400 xxxxxxxx...........
 //  0 1 2 3 4 5 6    0 1 2 3 4 5 6 7 8 9 A  B C D E F 0  1 2 3 4 5 6  7 8 9  A B C D E F 0 1 ...
@@ -4811,7 +4813,7 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     iEthLen = 60;                                                    // Minimum ethernet frame length
 
     // XID command, find the connection block.
-    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, (MAC*)((BYTE*)pLCSBAF2+11), (MAC*)((BYTE*)pLCSBAF2+17) );
+    pLCSCONN = find_connection_by_token_and_mac( pLCSDEV, pLCSBAF1->bUnknown8, 1, (MAC*)((BYTE*)pLCSBAF2+11), 2 );   // XID out & remote MAC
 
 //??    if (pLCSDEV->pLCSBLK->fDebug)                                                                   /* FixMe! Remove! */
 //??        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "found LCSCONN", 0 );  /* FixMe! Remove! */
@@ -4841,9 +4843,6 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     {
         /* FixMe!  Extract vectors */
     }
-
-//??    // XID command, find the connection block.
-//??    pLCSCONN = find_connection_by_mac_addresses( pLCSDEV, &pEthFrame->bDestMAC, &pEthFrame->bSrcMAC );
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4897,6 +4896,12 @@ void Process_8D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     UNREFERENCED( pLCSBAF2  );
     UNREFERENCED( hwLenBaf1 );
     UNREFERENCED( hwLenBaf2 );
+//                   Token
+//  00108D00001A6002 40000240 00000000
+//  0 1 2 3 4 5 6 7  8 9 A B  C D E F
+//
+//  0100000000000000000000000000000000000000000000000000
+//  0 1 2 3 4 5 6 7 8 9 A B C D E F 0 1 2 3 4 5 6 7 8 9
 
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
@@ -4914,7 +4919,7 @@ void Process_8D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     iEthLen = 60;                                                    // Minimum ethernet frame length
 
     // Find the connection block.
-    pLCSCONN = find_connection_by_connection_id( pLCSDEV, (BYTE*)pLCSBAF1+8 );
+    pLCSCONN = find_connection_by_token_and_mac( pLCSDEV, pLCSBAF1->bUnknown8, 3, NULL, 0 );       // Data out only
 
 //??    if (pLCSDEV->pLCSBLK->fDebug)                                                                   /* FixMe! Remove! */
 //??        net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "found LCSCONN", 0 );  /* FixMe! Remove! */
@@ -4979,6 +4984,12 @@ void Process_0C0B (PLCSDEV pLCSDEV, PLCSHDR pOutHDR, PLCSBAF1 pOutBAF1, PLCSBAF2
     UNREFERENCED( pOutBAF1     );
     UNREFERENCED( hwLenOutBaf1 );
     UNREFERENCED( hwLenOutBaf2 );
+//                   Token
+//  00110C0B00076002 40000240 0000000000
+//  0 1 2 3 4 5 6 7  8 9 A B  C
+//
+//  01000900000000
+//  0 1 2 3 4 5 6
 
 #define INBOUND_CC0B_SIZE 32
 static const BYTE Inbound_CC0B[INBOUND_CC0B_SIZE] =
@@ -5000,7 +5011,7 @@ static const BYTE Inbound_CC0B[INBOUND_CC0B_SIZE] =
 
 
     // Find the connection block.
-    pLCSCONN = find_connection_by_connection_id( pLCSDEV, (BYTE*)pOutBAF1+8 );
+    pLCSCONN = find_connection_by_token_and_mac( pLCSDEV, pOutBAF1->bUnknown8, 3, NULL, 0 );       // Data out only
     if (pLCSCONN)
     {
         remove_connection_from_chain( pLCSDEV, pLCSCONN );
@@ -5549,7 +5560,7 @@ static const BYTE Inbound_4C22[INBOUND_4C22_SIZE] =
                  {
                     0x00, 0x1D, 0x04, 0x00,                          /* LCSHDR  */
                     0x00, 0x0D, 0x4C, 0x22, 0x00, 0x0C, 0x60, 0x03,  /* LCSBAF1 */
-                    0x00, 0x00, 0x00, 0x01, 0x00,
+                    0xff, 0xff, 0xff, 0xff, 0x00,
                     0x01, 0xff, 0xff, 0xC0, 0x00, 0x00, 0x00, 0x08,  /* LCSBAF2 */
                     0x08, 0x00, 0x00, 0x00
                  };
@@ -5561,7 +5572,7 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
                  {
                     0x00, 0x18, 0x04, 0x00,
                     0x00, 0x0C, 0x4D, 0x00, 0x00, 0x08, 0x60, 0x01,
-                    0x00, 0x00, 0x01, 0x01,
+                    0xff, 0xff, 0xff, 0xff,
                     0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
                  };
 //  00180400  000C4D00 00086001 00000101  01 0000 4000024000
@@ -5569,7 +5580,6 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
 
     LLC         llc;
     int         illcsize;
-    BYTE*       pWork;
     DEVBLK*     pDEVBLK;
     PLCSBLK     pLCSBLK;
     PLCSATTN    pLCSATTN;
@@ -5630,11 +5640,12 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
         pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
 
         //
+        memcpy( pLCSBAF1->bUnknown8, pLCSCONN->bToken4, sizeof(pLCSCONN->bToken4) );     // Data out
+
+        //
         pLCSCONN->hwDataSeqNum++;
         STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
 
-        pWork = (BYTE*)pLCSBAF2;
-        memcpy( pWork+5, pLCSPORT->MAC_Address, 4 );   // Just the first 4-bytes!
         memcpy( (BYTE*)pLCSBAF2+5, pLCSPORT->MAC_Address, 4 );   // Just the first 4-bytes!
 
         // Copy the TH etc to the buffer.
@@ -5717,10 +5728,13 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
             pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
 
             //
+            memcpy( pLCSBAF1->bUnknown8, pLCSCONN->bToken4, sizeof(pLCSCONN->bToken4) );  // Data in
+
+            //
             STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
             pLCSCONN->hwDataSeqNum++;
 
-            memcpy( (BYTE*)pLCSBAF2+3, pLCSCONN->bConnectionId, sizeof(pLCSCONN->bConnectionId) );  // Copy Connection ID
+            memcpy( (BYTE*)pLCSBAF2+3, pLCSCONN->bToken3, sizeof(pLCSCONN->bToken3) );    // Data out
 
             // Add the buffer containing the XID response to the chain.
             add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
@@ -5762,6 +5776,9 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
                 FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
 //              FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
                 pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+                //
+                memcpy( pLCSBAF1->bUnknown8, pLCSCONN->bToken2, sizeof(pLCSCONN->bToken2) );     // Data out
 
                 //
                 pLCSCONN->hwXIDSeqNum++;
@@ -6671,19 +6688,90 @@ PLCSCONN  find_connection_by_mac_addresses( PLCSDEV pLCSDEV, MAC* pMAC1, MAC* pM
 }
 
 /* ------------------------------------------------------------------ */
-/* find_connection_by_connection_id(): Find LCSCONN.                  */
+/* find_connection_by_token_and_mac(): Find LCSCONN.                  */
 /* ------------------------------------------------------------------ */
-PLCSCONN  find_connection_by_connection_id( PLCSDEV pLCSDEV, BYTE* pConnID )
+PLCSCONN find_connection_by_token_and_mac( PLCSDEV pLCSDEV, BYTE* pToken, int iWhichToken, MAC* pMAC, int iWhichMAC )
 {
     PLCSCONN   pLCSCONN;
+    int        iFoundToken ;
+    int        iFoundMAC;
 
-    // Locate the LCSCONN on the chain.
     for (pLCSCONN = pLCSDEV->pFirstLCSCONN; pLCSCONN; pLCSCONN = pLCSCONN->pNextLCSCONN)
     {
-        if ( memcmp( pLCSCONN->bConnectionId, pConnID, sizeof(pLCSCONN->bConnectionId) ) == 0 )
+        iFoundToken = FALSE;
+        iFoundMAC = FALSE;
+        // Check for the token.
+        if (pToken)
         {
-            break;
+            switch (iWhichToken)
+            {
+            case 1:
+                if ( memcmp( pLCSCONN->bToken1, pToken, sizeof(pLCSCONN->bToken1) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            case 2:
+                if ( memcmp( pLCSCONN->bToken2, pToken, sizeof(pLCSCONN->bToken2) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            case 3:
+                if ( memcmp( pLCSCONN->bToken3, pToken, sizeof(pLCSCONN->bToken3) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            case 4:
+                if ( memcmp( pLCSCONN->bToken4, pToken, sizeof(pLCSCONN->bToken4) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            case 5:
+                if ( memcmp( pLCSCONN->bToken5, pToken, sizeof(pLCSCONN->bToken5) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            case 6:
+                if ( memcmp( pLCSCONN->bToken6, pToken, sizeof(pLCSCONN->bToken6) ) == 0 )
+                {
+                    iFoundToken = TRUE;
+                }
+                break;
+            }
+            if ( !iFoundToken )
+            {
+                continue;  // On to the next LCSCONN in the chain.
+            }
         }
+        // Check for the MAC address.
+        if (pMAC)
+        {
+            switch (iWhichMAC)
+            {
+            case 1:
+                if ( memcmp( pLCSCONN->bLocalMAC, pMAC, IFHWADDRLEN ) == 0 )
+                {
+                    iFoundMAC = TRUE;
+                }
+                break;
+            case 2:
+                if ( memcmp( pLCSCONN->bRemoteMAC, pMAC, IFHWADDRLEN ) == 0 )
+                {
+                    iFoundMAC = TRUE;
+                }
+                break;
+            }
+            if ( !iFoundMAC )
+            {
+                continue;  // On to the next LCSCONN in the chain.
+            }
+        }
+        // The token and/or the MAC address have been found.
+        break;
     }
 
     return pLCSCONN;
