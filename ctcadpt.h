@@ -580,18 +580,17 @@ struct _LCSBAF1                        // LCS SNA baffle 1
     HWORD       hwLenBaf1;             //  0  Length of baffle 1
     HWORD       hwTypeBaf;             //  2  Type of baffle
     HWORD       hwLenBaf2;             //  4  Length of baffle 2
-    BYTE        bUnknown6;             //  6    bit value
-    BYTE        bUnknown7;             //  7    byte value
-    BYTE        bUnknown8[4];          //  8
-                                       //
-    BYTE        bUnknown12[4];         //  C
-    BYTE        bUnknown16;            // 10
-    BYTE        bUnknown17;            // 11
-    BYTE        bUnknown18[2];         // 12
-    BYTE        bUnknown20[4];         // 14
-    BYTE        bUnknown24[4];         // 18
-    BYTE        bUnknown28[4];         // 1C
-    BYTE        bUnknown32[2];         // 20
+    BYTE        bByte06;               //  6    bit value
+    BYTE        bByte07;               //  7    byte value
+    BYTE        bTokenA[4];            //  8
+    BYTE        bTokenB[4];            //  C
+    BYTE        bByte16;               // 10
+    BYTE        bByte17;               // 11
+    BYTE        bByte18[2];            // 12
+    BYTE        bByte20[4];            // 14
+    BYTE        bTokenC[4];            // 18
+    BYTE        bByte28[4];            // 1C
+    BYTE        bByte32[2];            // 20
 } ATTRIBUTE_PACKED;
 
 
@@ -601,8 +600,18 @@ struct _LCSBAF1                        // LCS SNA baffle 1
 
 struct _LCSBAF2                        // LCS SNA baffle 2
 {
-    BYTE        bUnknown0;             // Always seems to contain 0x01.
-    HWORD       hwSeqNum;              // Sequence number
+    BYTE        bByte00;               //  0  Always seems to contain 0x01.
+    HWORD       hwSeqNum;              //  1  Sequence number
+    BYTE        bByte03[2];            //  3
+    BYTE        bByte05[6];            //  5
+    BYTE        bByte11;               //  B
+    BYTE        bByte12[5];            //  C
+    BYTE        bByte17;               // 11
+    BYTE        bByte18[5];            // 12
+    BYTE        bByte23;               // 17
+    BYTE        bByte24[2];            // 18
+    BYTE        bByte26;               // 1A
+    BYTE        bByte27;               // 1B
 } ATTRIBUTE_PACKED;
 
 
@@ -696,7 +705,9 @@ struct  _LCSDEV
     u_int       fChanProgActive:1;      // SNA Channel Program Active
     u_int       fAttnRequired:1;        // SNA Attention Required
     u_int       fPendingIctl:1;         // SNA Pending has LCSICTL structure
-    u_int       fAcceptPackets;         // SNA Accept Packets from Network
+    u_int       fAcceptPackets:1;       // SNA Accept Packets from Network
+    u_int       fTuntapError:1;         // SNA TUNTAP_Write error
+    int         iTuntapErrno;           // SNA TUNTAP_Write error number
     BYTE        bFlipFlop;              // SNA
 
     LOCK        LCSIBHChainLock;        // SNA LCSIBH Chain LOCK
