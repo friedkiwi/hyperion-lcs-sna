@@ -603,7 +603,12 @@ struct _LCSBAF2                        // LCS SNA baffle 2
     BYTE        bByte00;               //  0  Always seems to contain 0x01.
     HWORD       hwSeqNum;              //  1  Sequence number
     BYTE        bByte03[2];            //  3
-    BYTE        bByte05[6];            //  5
+    BYTE        bByte05;               //  5
+    BYTE        bByte06;               //  6
+    BYTE        bByte07;               //  7
+    BYTE        bByte08;               //  8
+    BYTE        bByte09;               //  9
+    BYTE        bByte10;               //  A
     BYTE        bByte11;               //  B
     BYTE        bByte12[5];            //  C
     BYTE        bByte17;               // 11
@@ -635,14 +640,16 @@ struct _LCSIBH                         // LCS SNA Inbound Buffer Header
 struct _LCSCONN                        // LCS SNA Connection
 {
     PLCSCONN  pNextLCSCONN;            // Pointer to next LCSCONN
-    BYTE      bToken1[4];              // Token 1  XID out
-    BYTE      bToken2[4];              // Token 2  XID in
-    BYTE      bToken3[4];              // Token 3  Data out
-    BYTE      bToken4[4];              // Token 4  Data in
-    BYTE      bToken5[4];              // Token 5
-    BYTE      bToken6[4];              // Token 6
+    BYTE      bInToken[4];             // Inbound Token. VTAM tells LCS that
+                                       // it will use this token for inbound.
+    BYTE      bOutToken[4];            // Outbound Token. LCS tells VTAM that
+                                       // it will use this token for outbound.
     MAC       bLocalMAC;               // Local MAC address
     MAC       bRemoteMAC;              // Remote MAC address
+    int       iCreated;                //
+#define LCSCONN_CREATED_INBOUND 1
+#define LCSCONN_CREATED_OUTBOUND 2
+    int       iNotUsed;                //
     U16       hwXIDSeqNum;             // XID Exchange Sequence number
     U16       hwDataSeqNum;            // Data Sequence number
     BYTE*     pLocalCPNameCV;          // Local CP Name Control Vector
@@ -709,6 +716,9 @@ struct  _LCSDEV
     u_int       fTuntapError:1;         // SNA TUNTAP_Write error
     int         iTuntapErrno;           // SNA TUNTAP_Write error number
     BYTE        bFlipFlop;              // SNA
+
+    U16         hwInXIDSeqNum;          // SNA XID Exchange Sequence number
+    U16         hwInDataSeqNum;         // SNA Data Sequence number
 
     LOCK        LCSIBHChainLock;        // SNA LCSIBH Chain LOCK
     PLCSIBH     pFirstLCSIBH;           // SNA First LCSIBH in chain
