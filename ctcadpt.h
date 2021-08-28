@@ -614,7 +614,8 @@ struct _LCSBAF2                        // LCS SNA baffle 2
     BYTE        bByte17;               // 11
     BYTE        bByte18[5];            // 12
     BYTE        bByte23;               // 17
-    BYTE        bByte24[2];            // 18
+    BYTE        bByte24;               // 18
+    BYTE        bByte25;               // 19
     BYTE        bByte26;               // 1A
     BYTE        bByte27;               // 1B
 } ATTRIBUTE_PACKED;

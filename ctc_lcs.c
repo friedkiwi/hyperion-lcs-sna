@@ -151,6 +151,9 @@ static void     LCS_ProcessAccepted_SNA ( PLCSPORT pLCSPORT, PLCSDEV pLCSDEV, BY
 static int      ExtractLLC( PLLC pLLC, BYTE* pStart, int iSize );
 static int      BuildLLC( PLLC pLLC, BYTE* pStart );
 
+static void     Process_0D10 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
+static void     Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
+static void     Process_8C0B (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
 static void     Process_0C0A (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
 static void     Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
 static void     Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2);
@@ -4305,6 +4308,25 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
                     switch (hwTypeBaf)
                     {
 
+                    // 0D10 is used when the connection is activate for outbound frames.
+
+                    case 0x0D10:
+                        Process_0D10( pLCSDEV, pLCSHDR, pLCSBAF1, pLCSBAF2, hwLenBaf1, hwLenBaf2 );
+                        pLCSDEV->fAttnRequired = TRUE;
+                        break;
+
+                    // 0D00 is used when the connection is activate for ???.
+
+                    case 0x0D00:
+                        Process_0D00( pLCSDEV, pLCSHDR, pLCSBAF1, pLCSBAF2, hwLenBaf1, hwLenBaf2 );
+                        break;
+
+                    // 8C0B is used when a connection is inactivated.
+
+                    case 0x8C0B:
+                        Process_8C0B( pLCSDEV, pLCSHDR, pLCSBAF1, pLCSBAF2, hwLenBaf1, hwLenBaf2 );
+                        break;
+
                     // 0C0A, 0C25, 0C22 and 8D00 are used when a connection is activated.
 
                     case 0x0C0A:
@@ -4576,6 +4598,293 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
 
 
 // ====================================================================
+//                       Process_0D10
+// ====================================================================
+//
+// The outbound LCSBAF1 and LCSBAF2 arriving from VTAM are usually,
+// respectively, 15 (0x0F) and 5 (0x05) or more bytes in length.
+//
+void Process_0D10 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2)
+{
+    UNREFERENCED( pLCSHDR   );
+    UNREFERENCED( hwLenBaf1 );
+//                   Token
+//  000F0D1000426002 40000240 00FF00
+//  0 1 2 3 4 5 6 7  8 9 A B  C D E
+//
+//             TH etc
+//  0100000000 xxxxxxxx...........
+//  0 1 2 3 4  5 6 7 8 9 A B C ...
+
+    DEVBLK*   pDEVBLK;
+    PLCSPORT  pLCSPORT;
+    PLCSCONN  pLCSCONN;
+    PETHFRM   pEthFrame;
+    int       iEthLen;
+    int       iLPDULen;
+    LLC       llc;
+    int       iTHetcLen;
+    int       iTraceLen;
+    BYTE      frame[1600];
+
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
+    memset( frame, 0, sizeof(frame) );                               // Clear area for ethernet fram
+    pEthFrame = (PETHFRM)&frame[0];
+    iEthLen = 60;                                                    // Minimum ethernet frame length
+
+    // Find the connection block.
+    pLCSCONN = find_connection_by_outbound_token( pLCSDEV, pLCSBAF1->bTokenA );
+    if (!pLCSCONN)
+    {
+        /* FixMe! Need an error message here! */
+        return;
+    }
+
+    //
+    memset( &llc, 0, sizeof(LLC) );
+    llc.fwDSAP    = LSAP_SNA_Path_Control;
+    llc.fwSSAP    = LSAP_SNA_Path_Control;
+    llc.fwNS      = 0;                           // FixMe! Need to understand
+    llc.fwNR      = 0;                           // ..and manage sequence numbers!
+    llc.fwType    = Type_Information_Frame;
+
+    // Construct Ethernet frame
+    memcpy( &pEthFrame->bDestMAC, &pLCSCONN->bRemoteMAC, IFHWADDRLEN );   // Copy destination MAC address
+    memcpy( &pEthFrame->bSrcMAC, &pLCSCONN->bLocalMAC, IFHWADDRLEN );     // Copy source MAC address
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                         // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );                 // Set data length
+
+    // Continue Ethernet frame construction if there is a TH etc.
+    iTHetcLen = ( hwLenBaf2 - 5 );                                        // Calculate length of TH etc
+    if ( iTHetcLen > 0 )                                                  // Any TH etc?
+    {
+        STORE_HW( pEthFrame->hwEthernetType, (U16)(iLPDULen + iTHetcLen) );     // Set LLC and TH etc length
+        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte05, iTHetcLen );   // Copy TH etc
+        if ( iEthLen < (iLPDULen + iTHetcLen) )
+        {
+            iEthLen = (iLPDULen + iTHetcLen);
+        }
+    }
+
+    // Trace Ethernet frame before sending to TAP device
+    if (pLCSPORT->pLCSBLK->fDebug)
+    {
+        // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+        WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                             pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
+        iTraceLen = iEthLen;
+        if (iTraceLen > MAX_TRACE_LEN)
+        {
+            iTraceLen = MAX_TRACE_LEN;
+            // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+            WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                                 iTraceLen, (iEthLen - iTraceLen) );
+        }
+        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '>', 'D', "eth frame", 0 );
+    }
+
+    // Write the Ethernet frame to the TAP device
+    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
+    {
+        pLCSDEV->iTuntapErrno = errno;
+        pLCSDEV->fTuntapError = TRUE;
+        PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
+    }
+
+    return;
+}
+
+
+// ====================================================================
+//                       Process_0D00
+// ====================================================================
+//
+// The outbound LCSBAF1 and LCSBAF2 arriving from VTAM are usually,
+// respectively, 15 (0x0F) and 5 (0x05) or more bytes in length.
+//
+void Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2)
+{
+    UNREFERENCED( pLCSHDR   );
+    UNREFERENCED( pLCSBAF1  );
+    UNREFERENCED( pLCSBAF2  );
+    UNREFERENCED( hwLenBaf1 );
+    UNREFERENCED( hwLenBaf2 );
+//                   Token
+//  000F0D0000426002 40000240 00FF00
+//  0 1 2 3 4 5 6 7  8 9 A B  C D E
+//
+//             TH etc.
+//  0100000000 xxxxxxxx...........
+//  0 1 2 3 4  5 6 7 8 9 A B C ...
+
+//??    DEVBLK*   pDEVBLK;
+//??    PLCSPORT  pLCSPORT;
+//??    PLCSCONN  pLCSCONN;
+//??    PETHFRM   pEthFrame;
+//??    int       iEthLen;
+//??    int       iLPDULen;
+//??    LLC       llc;
+//??    int       iTHetcLen;
+//??    int       iTraceLen;
+//??    BYTE      frame[1600];
+//??
+//??
+//??    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+//??    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
+//??    memset( frame, 0, sizeof(frame) );                               // Clear area for ethernet fram
+//??    pEthFrame = (PETHFRM)&frame[0];
+//??    iEthLen = 60;                                                    // Minimum ethernet frame length
+//??
+//??    // Find the connection block.
+//??    pLCSCONN = find_connection_by_outbound_token( pLCSDEV, pLCSBAF1->bTokenA );
+//??    if (!pLCSCONN)
+//??    {
+//??        /* FixMe! Need an error message here! */
+//??        return;
+//??    }
+//??
+//??    //
+//??    memset( &llc, 0, sizeof(LLC) );
+//??    llc.fwDSAP    = LSAP_SNA_Path_Control;
+//??    llc.fwSSAP    = LSAP_SNA_Path_Control;
+//??    llc.fwNS      = 0;                           // FixMe! Need to understand
+//??    llc.fwNR      = 0;                           // ..and manage equence numbers!
+//??    llc.fwType    = Type_Information_Frame;
+//??
+//??    // Construct Ethernet frame
+//??    memcpy( &pEthFrame->bDestMAC, &pLCSCONN->bRemoteMAC, IFHWADDRLEN );   // Copy destination MAC address
+//??    memcpy( &pEthFrame->bSrcMAC, &pLCSCONN->bLocalMAC, IFHWADDRLEN );     // Copy source MAC address
+//??    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                         // Build LLC PDU
+//??    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );                 // Set data length
+//??
+//??    // Continue Ethernet frame construction if there is a TH etc.
+//??    iTHetcLen = ( hwLenBaf2 - 5 );                                        // Calculate length of TH etc
+//??    if ( iTHetcLen > 0 )                                                  // Any TH etc?
+//??    {
+//??        STORE_HW( pEthFrame->hwEthernetType, (U16)(iLPDULen + iTHetcLen) );     // Set LLC and TH etc length
+//??        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte05, iTHetcLen );   // Copy TH etc
+//??        if ( iEthLen < (iLPDULen + iTHetcLen) )
+//??        {
+//??            iEthLen = (iLPDULen + iTHetcLen);
+//??        }
+//??    }
+//??
+//??    // Trace Ethernet frame before sending to TAP device
+//??    if (pLCSPORT->pLCSBLK->fDebug)
+//??    {
+//??        // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+//??        WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+//??                             pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
+//??        iTraceLen = iEthLen;
+//??        if (iTraceLen > MAX_TRACE_LEN)
+//??        {
+//??            iTraceLen = MAX_TRACE_LEN;
+//??            // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
+//??            WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+//??                                 iTraceLen, (iEthLen - iTraceLen) );
+//??        }
+//??        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '>', 'D', "eth frame", 0 );
+//??    }
+//??
+//??    // Write the Ethernet frame to the TAP device
+//??    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
+//??    {
+//??        pLCSDEV->iTuntapErrno = errno;
+//??        pLCSDEV->fTuntapError = TRUE;
+//??        PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
+//??    }
+
+    return;
+}
+
+
+// ====================================================================
+//                       Process_8C0B
+// ====================================================================
+//
+// The outbound LCSBAF1 and LCSBAF2 arriving from VTAM are usually,
+// respectively, 12 (0x0C) and 3 (0x03) bytes in length.
+//
+void Process_8C0B (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2)
+{
+    UNREFERENCED( pLCSHDR   );
+    UNREFERENCED( pLCSBAF1  );
+    UNREFERENCED( hwLenBaf1 );
+    UNREFERENCED( hwLenBaf2 );
+//                   Token
+//  000C8C0B00036002 40000240
+//  0 1 2 3 4 5 6 7  8 9 A B
+//
+//  010000
+//  0 1 2
+
+    DEVBLK*     pDEVBLK;                                                                   /* FixMe! Remove! */
+    PLCSPORT    pLCSPORT;
+    PLCSCONN    pLCSCONN;
+    PLCSIBH     pLCSIBH;
+    int         iLPDULen;
+    LLC         llc;
+    PETHFRM     pEthFrame;
+    int         iEthLen;
+    BYTE        frame[64];
+
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
+    memset( frame, 0, sizeof(frame) );                               // Clear area for ethernet fram
+    pEthFrame = (PETHFRM)&frame[0];
+    iEthLen = 60;                                                    // Minimum ethernet frame length
+
+    // Find the connection block.
+    pLCSCONN = find_connection_by_outbound_token( pLCSDEV, pLCSBAF1->bTokenA );
+    if (!pLCSCONN)
+    {
+        /* FixMe! Need an error message here! */
+        return;
+    }
+
+    //
+    memset( &llc, 0, sizeof(LLC) );
+    llc.fwDSAP    = LSAP_SNA_Path_Control;
+    llc.fwSSAP    = LSAP_SNA_Path_Control;
+    llc.fwSSAP_CR = 1;
+    llc.fwPF      = 1;
+    llc.fwM       = M_UA_Response;
+    llc.fwType    = Type_Unnumbered_Frame;
+
+    // Construct Ethernet frame
+    memcpy( &pEthFrame->bDestMAC, &pLCSBAF2->bByte11, IFHWADDRLEN ); // Copy destination MAC address
+    memcpy( &pEthFrame->bSrcMAC, &pLCSBAF2->bByte17, IFHWADDRLEN );  // Copy source MAC address
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                    // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );            // Set data length
+
+    // Trace Ethernet frame before sending to TAP device
+    if (pLCSPORT->pLCSBLK->fDebug)
+    {
+        // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+        WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                             pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
+        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iEthLen, '>', 'D', "eth frame", 0 );
+    }
+
+    // Write the Ethernet frame to the TAP device
+    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
+    {
+        pLCSDEV->iTuntapErrno = errno;
+        pLCSDEV->fTuntapError = TRUE;
+        PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
+    }
+
+    remove_connection_from_chain( pLCSDEV, pLCSCONN );
+    free_connection( pLCSDEV, pLCSCONN );
+
+    return;
+}
+
+
+// ====================================================================
 //                       Process_0C0A
 // ====================================================================
 //
@@ -4749,7 +5058,8 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
     PLCSCONN  pLCSCONN;
-//??    PLCSCONN  pLCSCONN;
+    int       iLPDULen;
+    LLC       llc;
     PETHFRM   pEthFrame;
     int       iEthLen;
     BYTE      frame[64];
@@ -4769,12 +5079,20 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
         return;
     }
 
+    //
+    memset( &llc, 0, sizeof(LLC) );
+    llc.fwDSAP    = pLCSBAF2->bByte24;                               // Copy LLC inbound SSAP to outbound DSAP
+    llc.fwSSAP    = pLCSBAF2->bByte23;                               // Copy LLC inbound DSAP to outbound SSAP
+    llc.fwSSAP_CR = 1;
+    llc.fwPF      = 1;
+    llc.fwM       = M_TEST_Command_or_Response;
+    llc.fwType    = Type_Unnumbered_Frame;
+
     // Construct Ethernet frame
     memcpy( &pEthFrame->bDestMAC, &pLCSBAF2->bByte11, IFHWADDRLEN ); // Copy destination MAC address
     memcpy( &pEthFrame->bSrcMAC, &pLCSBAF2->bByte17, IFHWADDRLEN );  // Copy source MAC address
-    STORE_HW( pEthFrame->hwEthernetType, 0x0003 );                   // Set data length
-    memcpy( &pEthFrame->bData, &pLCSBAF2->bByte23, 3 );              // Copy LLC DSAP, SSAP and Control containing null.
-    pEthFrame->bData[2] = 0xF3;                                      // Set LLC Control = TEST
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                    // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );            // Set data length
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -4820,6 +5138,8 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     DEVBLK*   pDEVBLK;
     PLCSPORT  pLCSPORT;
     PLCSCONN  pLCSCONN;
+    int       iLPDULen;
+    LLC       llc;
     PETHFRM   pEthFrame;
     int       iEthLen;
     int       iXID3andCVlen;
@@ -4841,24 +5161,33 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
         return;
     }
 
+    //
+    memset( &llc, 0, sizeof(LLC) );
+    llc.fwDSAP    = pLCSBAF2->bByte24;                               // Copy LLC inbound SSAP to outbound DSAP
+    llc.fwSSAP    = pLCSBAF2->bByte23;                               // Copy LLC inbound DSAP to outbound SSAP
+    if ( pLCSCONN->iCreated == LCSCONN_CREATED_INBOUND )
+    {
+        llc.fwSSAP_CR = 1;
+    }
+    llc.fwPF      = 1;
+    llc.fwM       = M_XID_Command_or_Response;
+    llc.fwType    = Type_Unnumbered_Frame;
+
     // Construct Ethernet frame
     memcpy( &pEthFrame->bDestMAC, &pLCSBAF2->bByte11, IFHWADDRLEN ); // Copy destination MAC address
     memcpy( &pEthFrame->bSrcMAC, &pLCSBAF2->bByte17, IFHWADDRLEN );  // Copy source MAC address
-    STORE_HW( pEthFrame->hwEthernetType, 0x0003 );                   // Set data length
-    memcpy( &pEthFrame->bData, &pLCSBAF2->bByte23, 3 );              // Copy LLC DSAP, SSAP and Control containing null.
-    if ( pLCSCONN->iCreated == LCSCONN_CREATED_INBOUND )
-        pEthFrame->bData[1] |= 0x01;                                 // Set SSAP_CR on, i.e. response
-    pEthFrame->bData[2] = 0xBF;                                      // Set LLC Control = XID
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                    // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );            // Set data length
 
     // Continue Ethernet frame construction if there is an XID3 and CV's.
     iXID3andCVlen = ( hwLenBaf2 - 26 );                              // Calculate length of XID3 and CV's
     if ( iXID3andCVlen > 0 )                                         // Any XID3 an CV's?
     {
-        STORE_HW( pEthFrame->hwEthernetType, ( 3 + iXID3andCVlen ) );      // Set LLC and XID3 and CV's length
-        memcpy( &pEthFrame->bData[3], &pLCSBAF2->bByte26, iXID3andCVlen ); // Copy XID3 and CV's.
-        if ( iEthLen < (17 + iXID3andCVlen) )
+        STORE_HW( pEthFrame->hwEthernetType, (U16)( iLPDULen + iXID3andCVlen ) );   // Set LLC and XID3 and CV's length
+        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte26, iXID3andCVlen );   // Copy XID3 and CV's.
+        if ( iEthLen < ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXID3andCVlen) )
         {
-            iEthLen = (17 + iXID3andCVlen);
+            iEthLen = ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXID3andCVlen);
         }
     }
 
@@ -4956,8 +5285,8 @@ void Process_8D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     // Construct Ethernet frame
     memcpy( &pEthFrame->bDestMAC, &pLCSCONN->bRemoteMAC, IFHWADDRLEN );   // Copy destination MAC address
     memcpy( &pEthFrame->bSrcMAC, &pLCSCONN->bLocalMAC, IFHWADDRLEN );     // Copy source MAC address
-    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                      // Build LLC PDU
-    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );              // Set data length
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                         // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );                 // Set data length
 
     // Trace Ethernet frame before sending to TAP device
     if (pLCSPORT->pLCSBLK->fDebug)
@@ -5606,6 +5935,18 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
 //  00180400  000C4D00 00086001 00000101  01 0000 40000240 00
 //            0 1 2 3  4 5 6 7  8 9 A B   0  1 2  3 4 5 6  7
 
+#define INBOUND_4C0B_SIZE  32
+static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
+                 {
+                    0x00, 0x20, 0x04, 0x00,                          /* LCSHDR  */
+                    0x00, 0x18, 0x4C, 0x0B, 0x00, 0x03, 0x60, 0x01,  /* LCSBAF1 */
+                    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x76, 0x56, 0x00, 0x00, 0x00, 0x00,
+                    0x01, 0x40, 0x00, 0x00                           /* LCSBAF2 */
+                 };
+//  00200400  00184C0B 00036001 00000101 00000000 00007656 00000000  01 4000 00
+//            0 1 2 3  4 5 6 7  8 9 A B  C D E F  0 1 2 3  4 5 6 7   0  1 2  3
+
     LLC         llc;
     int         illcsize;
     DEVBLK*     pDEVBLK;
@@ -5737,9 +6078,10 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
 
             //
             memset( &llcout, 0, sizeof(LLC) );
-            llcout.fwDSAP    = LSAP_SNA_Path_Control;
-            llcout.fwSSAP    = LSAP_Null;
+            llcout.fwDSAP    = pEthFrame->bData[1];        // Copy LLC inbound SSAP as outbound DSAP
+            llcout.fwSSAP    = pEthFrame->bData[0];        // Copy LLC inbound DSAP as outbound SSAP
             llcout.fwSSAP_CR = 1;
+            llcout.fwNR      = 0;                          // FixMe! Need to understand and manage sequence numbers!
             llcout.fwPF      = 1;
             llcout.fwSS      = SS_Receiver_Ready;
             llcout.fwType    = Type_Supervisory_Frame;
@@ -5831,6 +6173,35 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
 
         // Unnumbered Frame: DISC Command (B'01000', 0x10, 0x53).
         case M_DISC_Command:
+
+            // Find the connection block.
+            pLCSCONN = find_connection_by_remote_mac( pLCSDEV, &pEthFrame->bSrcMAC );
+            if (!pLCSCONN)
+            {
+                WRMSG( HHC03984, "E", "No LCSCONN found");
+                /* FixMe! Need a proper error message here! */
+                break;
+            }
+
+            // Obtain a buffer in which to construct the data to be passed to VTAM.
+            pLCSIBH = alloc_lcs_buffer( pLCSDEV, ( INBOUND_4C0B_SIZE * 2 ) );
+
+            memcpy( &pLCSIBH->bData, Inbound_4C0B, INBOUND_4C0B_SIZE );
+            pLCSIBH->iDataLen = INBOUND_4C0B_SIZE;
+
+            pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+            pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+//          FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+//          FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+//          pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+            //
+            memcpy( pLCSBAF1->bTokenA, &pLCSCONN->bInToken, sizeof(pLCSCONN->bInToken) );  // Set Inbound token
+
+            // Add the buffer containing the XID response to the chain.
+            add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
+
+            fAttnRequired = TRUE;
 
             break;
 
@@ -6032,153 +6403,6 @@ static const BYTE Inbound_4D00[INBOUND_4D00_SIZE] =
             fAttnRequired = TRUE;
 
             break;
-
-//??              if (llc.fwSSAP_CR)  // Response. The local system is exchanging identifiers.
-//??              {
-//??
-//??                  // XID response, find the connection block.
-//??                  pLCSCONN = find_connection_by_remote_mac( pLCSDEV, &pEthFrame->bSrcMAC );
-//??                  if (!pLCSCONN)
-//??                  {
-//??                      /* FixMe! Need an error message here! */
-//??                      break;
-//??                  }
-//??
-//??                  // Obtain a buffer in which to construct the data to be passed to VTAM.
-//??                  // Note: The largest XID3 and vectors seen has been less than 160-bytes.
-//??                  pLCSIBH = alloc_lcs_buffer( pLCSDEV, 496 );
-//??
-//??                  memcpy( &pLCSIBH->bData, Inbound_4C22, INBOUND_4C22_SIZE );
-//??                  pLCSIBH->iDataLen = INBOUND_4C22_SIZE;
-//??
-//??                  pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
-//??                  pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
-//??                  FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
-//??  //              FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                  pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
-//??
-//??                  //
-//??                  pLCSCONN->hwXIDSeqNum++;
-//??                  STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwXIDSeqNum );
-//??
-//??                  // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
-//??                  memcpy( &pLCSBAF2->bByte12, &pEthFrame->bDestMAC, IFHWADDRLEN );
-//??                  memcpy( &pLCSBAF2->bByte18, &pEthFrame->bSrcMAC, IFHWADDRLEN );
-//??                  memcpy( &pLCSBAF2->bByte24, &pEthFrame->bData, 3 );
-//??
-//??                  pLCSIBH->iDataLen += (6 + 6 + 3);
-//??
-//??                  FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                  hwLenBaf2 += (6 + 6 + 3);
-//??                  STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
-//??
-//??                  FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                  hwOffset += (6 + 6 + 3);
-//??                  STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??
-//??                  // Copy the XID3 and CV's to the buffer.
-//??                  iDatasize = (iLLCandDatasize - illcsize);
-//??                  if ( iDatasize > 0 )
-//??                  {
-//??                      memcpy( &pLCSBAF2->bByte27, &pEthFrame->bData[3], iDatasize );
-//??
-//??                      pLCSIBH->iDataLen += iDatasize;
-//??
-//??                      FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                      hwLenBaf2 += iDatasize;
-//??                      STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
-//??
-//??                      FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                      hwOffset += iDatasize;
-//??                      STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??                  }
-//??
-//??                  // Add a padding byte to the buffer, if necessary.
-//??                  if  ( pLCSIBH->iDataLen & 0x01 )
-//??                  {
-//??                      pLCSIBH->iDataLen++;
-//??
-//??                      FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                      hwOffset++;
-//??                      STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??                  }
-//??
-//??                  // Add the buffer containing the XID response to the chain.
-//??                  add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
-//??
-//??                  fAttnRequired = TRUE;
-//??
-//??              }
-//??              else  // Command. A remote system is exchanging identifiers.
-//??              {
-//??
-//??                  // Obtain a buffer in which to construct the data to be passed to VTAM.
-//??                  // Note: The largest XID3 and vectors seen has been less than 160-bytes.
-//??                  pLCSIBH = alloc_lcs_buffer( pLCSDEV, 496 );
-//??
-//??                  memcpy( &pLCSIBH->bData, Inbound_4C22, INBOUND_4C22_SIZE );
-//??                  pLCSIBH->iDataLen = INBOUND_4C22_SIZE;
-//??
-//??                  pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
-//??                  pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
-//??                  FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
-//??  //              FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                  pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
-//??
-//??                  //
-//??                  pLCSDEV->hwInXIDSeqNum++;
-//??                  STORE_HW( pLCSBAF2->hwSeqNum, pLCSDEV->hwInXIDSeqNum );
-//??
-//??                  // Copy the destination MAC address, the source MAC addresses, and the LLC to the buffer.
-//??                  memcpy( &pLCSBAF2->bByte12, &pEthFrame->bDestMAC, IFHWADDRLEN );
-//??                  memcpy( &pLCSBAF2->bByte18, &pEthFrame->bSrcMAC, IFHWADDRLEN );
-//??                  memcpy( &pLCSBAF2->bByte24, &pEthFrame->bData, 3 );
-//??
-//??                  pLCSIBH->iDataLen += (6 + 6 + 3);
-//??
-//??                  FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                  hwLenBaf2 += (6 + 6 + 3);
-//??                  STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
-//??
-//??                  FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                  hwOffset += (6 + 6 + 3);
-//??                  STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??
-//??                  // Copy the XID3 and CV's to the buffer.
-//??                  iDatasize = (iLLCandDatasize - illcsize);
-//??                  if ( iDatasize > 0 )
-//??                  {
-//??                      memcpy( &pLCSBAF2->bByte27, &pEthFrame->bData[3], iDatasize );
-//??
-//??                      pLCSIBH->iDataLen += iDatasize;
-//??
-//??                      FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
-//??                      hwLenBaf2 += iDatasize;
-//??                      STORE_HW( pLCSBAF1->hwLenBaf2, hwLenBaf2 );
-//??
-//??                      FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                      hwOffset += iDatasize;
-//??                      STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??                  }
-//??
-//??                  // Add a padding byte to the buffer, if necessary.
-//??                  if  ( pLCSIBH->iDataLen & 0x01 )
-//??                  {
-//??                      pLCSIBH->iDataLen++;
-//??
-//??                      FETCH_HW( hwOffset, pLCSHDR->hwOffset );
-//??                      hwOffset++;
-//??                      STORE_HW( pLCSHDR->hwOffset, hwOffset );
-//??                  }
-//??
-//??                  // Add the buffer containing the XID response to the chain.
-//??                  add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
-//??
-//??                  fAttnRequired = TRUE;
-//??
-//??              }
-//??
-//??              break;
 
         // Unnumbered Frame: TEST Command or Response (B'11100, 0x38, 0xF3).
         case M_TEST_Command_or_Response:
