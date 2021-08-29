@@ -4706,6 +4706,7 @@ void Process_0D10 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 //
 void Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2)
 {
+    UNREFERENCED( pLCSDEV   );
     UNREFERENCED( pLCSHDR   );
     UNREFERENCED( pLCSBAF1  );
     UNREFERENCED( pLCSBAF2  );
@@ -4823,7 +4824,6 @@ void Process_8C0B (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     DEVBLK*     pDEVBLK;                                                                   /* FixMe! Remove! */
     PLCSPORT    pLCSPORT;
     PLCSCONN    pLCSCONN;
-    PLCSIBH     pLCSIBH;
     int         iLPDULen;
     LLC         llc;
     PETHFRM     pEthFrame;
@@ -4928,7 +4928,6 @@ static const BYTE Inbound_CC0A[INBOUND_CC0A_SIZE] =
     PLCSBAF2    pInBAF2;
     U16         hwLenInBaf1;
 //  U16         hwLenInBaf2;
-    U32         iToken;
 
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];                                    /* FixMe! Remove! */
@@ -5965,6 +5964,11 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
     U16         hwLenBaf1;
     U16         hwLenBaf2;
     BYTE        fAttnRequired = FALSE;
+    PETHFRM     pEthFrameOut;
+    int         iEthLenOut;
+    int         iLPDULenOut;
+    LLC         llcout;
+    BYTE        frameout[64];
 
 
     pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];  /* SNA has only one device */
@@ -6064,13 +6068,6 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 
         // Supervisory Frame: Receiver Ready.
         case SS_Receiver_Ready:
-
-            PETHFRM   pEthFrameOut;
-            int       iEthLenOut;
-            int       iLPDULenOut;
-            LLC       llcout;
-            BYTE      frameout[64];
-
 
             memset( frameout, 0, sizeof(frameout) );       // Clear area for ethernet fram
             pEthFrameOut = (PETHFRM)&frameout[0];
@@ -6447,13 +6444,6 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
             }
             else  // Command. Respond to the TEST from the remote system.
             {
-
-                PETHFRM   pEthFrameOut;
-                int       iEthLenOut;
-                int       iLPDULenOut;
-                LLC       llcout;
-                BYTE      frameout[64];
-
 
                 memset( frameout, 0, sizeof(frameout) );       // Clear area for ethernet fram
                 pEthFrameOut = (PETHFRM)&frameout[0];
