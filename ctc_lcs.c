@@ -4308,14 +4308,13 @@ void  LCS_Write_SNA( DEVBLK* pDEVBLK,   U32   sCount,
                     switch (hwTypeBaf)
                     {
 
-                    // 0D10 is used when the connection is activate for outbound frames.
+                    // 0D10 is used when the connection is active for outbound frames.
 
                     case 0x0D10:
                         Process_0D10( pLCSDEV, pLCSHDR, pLCSBAF1, pLCSBAF2, hwLenBaf1, hwLenBaf2 );
-                        pLCSDEV->fAttnRequired = TRUE;
                         break;
 
-                    // 0D00 is used when the connection is activate for ???.
+                    // 0D00 is used when the connection is active for ???.
 
                     case 0x0D00:
                         Process_0D00( pLCSDEV, pLCSHDR, pLCSBAF1, pLCSBAF2, hwLenBaf1, hwLenBaf2 );
@@ -5080,9 +5079,8 @@ void Process_0C25 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 
     //
     memset( &llc, 0, sizeof(LLC) );
-    llc.fwDSAP    = pLCSBAF2->bByte24;                               // Copy LLC inbound SSAP to outbound DSAP
-    llc.fwSSAP    = pLCSBAF2->bByte23;                               // Copy LLC inbound DSAP to outbound SSAP
-    llc.fwSSAP_CR = 1;
+    llc.fwDSAP    = pLCSBAF2->bByte23;                               // Copy LLC DSAP
+    llc.fwSSAP    = pLCSBAF2->bByte24;                               // Copy LLC SSAP
     llc.fwPF      = 1;
     llc.fwM       = M_TEST_Command_or_Response;
     llc.fwType    = Type_Unnumbered_Frame;
@@ -5162,8 +5160,8 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 
     //
     memset( &llc, 0, sizeof(LLC) );
-    llc.fwDSAP    = pLCSBAF2->bByte24;                               // Copy LLC inbound SSAP to outbound DSAP
-    llc.fwSSAP    = pLCSBAF2->bByte23;                               // Copy LLC inbound DSAP to outbound SSAP
+    llc.fwDSAP    = pLCSBAF2->bByte23;                               // Copy LLC DSAP
+    llc.fwSSAP    = pLCSBAF2->bByte24;                               // Copy LLC SSAP
     if ( pLCSCONN->iCreated == LCSCONN_CREATED_INBOUND )
     {
         llc.fwSSAP_CR = 1;
@@ -5997,6 +5995,12 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
     // Information Frame.
     case Type_Information_Frame:
 
+        {                                                                          /* FixMe! Remove! */
+          char    tmp[256];                                                        /* FixMe! Remove! */
+          snprintf( (char*)tmp, 256, "LLC information frame received: NS=%d, NR=%d", llc.fwNS, llc.fwNR );
+          WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
+        }                                                                          /* FixMe! Remove! */
+
         // Inbound TH etc, find the connection block.
         pLCSCONN = find_connection_by_remote_mac( pLCSDEV, &pEthFrame->bSrcMAC );
         if (!pLCSCONN)
@@ -6030,7 +6034,7 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
         iDatasize = (iLLCandDatasize - illcsize);
         if ( iDatasize > 0 )
         {
-            memcpy( &pLCSBAF2->bByte27, &pEthFrame->bData[3], iDatasize );
+            memcpy( &pLCSBAF2->bByte09, &pEthFrame->bData[illcsize], iDatasize );
 
             pLCSIBH->iDataLen += iDatasize;
 
@@ -6063,48 +6067,73 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
     // Supervisory Frame.
     case Type_Supervisory_Frame:
 
+        {                                                                          /* FixMe! Remove! */
+          char    tmp[256];                                                        /* FixMe! Remove! */
+          snprintf( (char*)tmp, 256, "LLC supervisory frame received: SS=%d, NR=%d", llc.fwSS, llc.fwNR );
+          WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
+        }                                                                          /* FixMe! Remove! */
+
         switch (llc.fwSS)
         {
 
         // Supervisory Frame: Receiver Ready.
         case SS_Receiver_Ready:
 
-            memset( frameout, 0, sizeof(frameout) );       // Clear area for ethernet fram
-            pEthFrameOut = (PETHFRM)&frameout[0];
-            iEthLenOut = 60;                               // Minimum ethernet frame length
+//??              memset( frameout, 0, sizeof(frameout) );       // Clear area for ethernet fram
+//??              pEthFrameOut = (PETHFRM)&frameout[0];
+//??              iEthLenOut = 60;                               // Minimum ethernet frame length
+//??
+//??              //
+//??              memset( &llcout, 0, sizeof(LLC) );
+//??              llcout.fwDSAP    = pEthFrame->bData[1];        // Copy LLC inbound SSAP as outbound DSAP
+//??              llcout.fwSSAP    = pEthFrame->bData[0];        // Copy LLC inbound DSAP as outbound SSAP
+//??              llcout.fwSSAP_CR = 1;
+//??              llcout.fwNR      = 0;                          // FixMe! Need to understand and manage sequence numbers!
+//??              llcout.fwPF      = 1;
+//??              llcout.fwSS      = SS_Receiver_Ready;
+//??              llcout.fwType    = Type_Supervisory_Frame;
+//??
+//??              // Construct Ethernet frame
+//??              memcpy( &pEthFrameOut->bDestMAC, &pEthFrame->bSrcMAC, IFHWADDRLEN );  // Copy destination MAC address
+//??              memcpy( &pEthFrameOut->bSrcMAC, &pEthFrame->bDestMAC, IFHWADDRLEN );  // Copy source MAC address
+//??              iLPDULenOut = BuildLLC( &llcout, pEthFrameOut->bData);                // Build LLC PDU
+//??              STORE_HW( pEthFrameOut->hwEthernetType, (U16)iLPDULenOut );           // Set data length
+//??
+//??              // Trace Ethernet frame before sending to TAP device
+//??              if (pLCSBLK->fDebug)
+//??              {
+//??                  // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+//??                  WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+//??                                       pLCSDEV->bPort, iEthLenOut, "802.3 SNA", pLCSPORT->szNetIfName );
+//??                  net_data_trace( pDEVBLK, (BYTE*)pEthFrameOut, iEthLenOut, '>', 'D', "eth frame", 0 );
+//??              }
+//??
+//??              // Write the Ethernet frame to the TAP device
+//??              if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrameOut, iEthLenOut ) != iEthLenOut)
+//??              {
+//??  //??            pLCSDEV->iTuntapErrno = errno;
+//??  //??            pLCSDEV->fTuntapError = TRUE;
+//??                  PTT_TIMING( "*WRITE ERR", 0, iEthLenOut, 1 );
+//??              }
 
-            //
-            memset( &llcout, 0, sizeof(LLC) );
-            llcout.fwDSAP    = pEthFrame->bData[1];        // Copy LLC inbound SSAP as outbound DSAP
-            llcout.fwSSAP    = pEthFrame->bData[0];        // Copy LLC inbound DSAP as outbound SSAP
-            llcout.fwSSAP_CR = 1;
-            llcout.fwNR      = 0;                          // FixMe! Need to understand and manage sequence numbers!
-            llcout.fwPF      = 1;
-            llcout.fwSS      = SS_Receiver_Ready;
-            llcout.fwType    = Type_Supervisory_Frame;
+            if (pLCSPORT->pLCSBLK->fDebug)
+                WRMSG( HHC03984, "W", "Discard Supervisory frame: Receiver Ready");
 
-            // Construct Ethernet frame
-            memcpy( &pEthFrameOut->bDestMAC, &pEthFrame->bSrcMAC, IFHWADDRLEN );  // Copy destination MAC address
-            memcpy( &pEthFrameOut->bSrcMAC, &pEthFrame->bDestMAC, IFHWADDRLEN );  // Copy source MAC address
-            iLPDULenOut = BuildLLC( &llcout, pEthFrameOut->bData);                // Build LLC PDU
-            STORE_HW( pEthFrameOut->hwEthernetType, (U16)iLPDULenOut );           // Set data length
+            break;
 
-            // Trace Ethernet frame before sending to TAP device
-            if (pLCSBLK->fDebug)
-            {
-                // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
-                WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
-                                     pLCSDEV->bPort, iEthLenOut, "802.3 SNA", pLCSPORT->szNetIfName );
-                net_data_trace( pDEVBLK, (BYTE*)pEthFrameOut, iEthLenOut, '>', 'D', "eth frame", 0 );
-            }
+        // Supervisory Frame: Receiver Ready.
+        case SS_Receiver_Not_Ready:
 
-            // Write the Ethernet frame to the TAP device
-            if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrameOut, iEthLenOut ) != iEthLenOut)
-            {
-//??            pLCSDEV->iTuntapErrno = errno;
-//??            pLCSDEV->fTuntapError = TRUE;
-                PTT_TIMING( "*WRITE ERR", 0, iEthLenOut, 1 );
-            }
+            if (pLCSPORT->pLCSBLK->fDebug)
+                WRMSG( HHC03984, "W", "Discard Supervisory frame: Receiver Not Ready");
+
+            break;
+
+        // Supervisory Frame: Reject
+        case SS_Reject:
+
+            if (pLCSPORT->pLCSBLK->fDebug)
+                WRMSG( HHC03984, "W", "Discard Supervisory frame: Reject");
 
             break;
 
@@ -6119,13 +6148,19 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
     // Unnumbered Frame.
     case Type_Unnumbered_Frame:
 
+        {                                                                          /* FixMe! Remove! */
+          char    tmp[256];                                                        /* FixMe! Remove! */
+          snprintf( (char*)tmp, 256, "LLC unnumbered frame received: M=%d", llc.fwM );
+          WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
+        }                                                                          /* FixMe! Remove! */
+
         switch (llc.fwM)
         {
 
         // Unnumbered Frame: SABME Command (B'01111', 0x1B, 0x7F).
         case M_SABME_Command:
 
-            // XID response, find the connection block.
+            // Find the connection block.
             pLCSCONN = find_connection_by_remote_mac( pLCSDEV, &pEthFrame->bSrcMAC );
             if (!pLCSCONN)
             {
@@ -6150,7 +6185,7 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 
             //
             STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
-            pLCSCONN->hwDataSeqNum++;
+//??        pLCSCONN->hwDataSeqNum++;
 
             memcpy( &pLCSBAF2->bByte03, &pLCSCONN->bOutToken, sizeof(pLCSCONN->bOutToken) ); // Outbound token
 
@@ -6327,7 +6362,7 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
             }
 
             // Obtain a buffer in which to construct the data to be passed to VTAM.
-            // Note: The largest XID3 and vectors seen has been less than 160-bytes.
+            // Note: The largest XID3 and CV's seen has been less than 160-bytes.
             pLCSIBH = alloc_lcs_buffer( pLCSDEV, 496 );
 
             memcpy( &pLCSIBH->bData, Inbound_4C22, INBOUND_4C22_SIZE );
@@ -6451,8 +6486,8 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 
                 //
                 memset( &llcout, 0, sizeof(LLC) );
-                llcout.fwDSAP    = LSAP_SNA_Path_Control;
-                llcout.fwSSAP    = LSAP_Null;
+                llcout.fwDSAP    = llc.fwSSAP;                       // Copy LLC command SSAP as response DSAP
+                llcout.fwSSAP    = llc.fwDSAP;                       // Copy LLC command DSAP as response SSAP
                 llcout.fwSSAP_CR = 1;
                 llcout.fwPF      = 1;
                 llcout.fwM       = M_TEST_Command_or_Response;
@@ -6541,7 +6576,7 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 msg970_return:
     if (pLCSPORT->pLCSBLK->fDebug)
         // "CTC: lcs device port %2.2X: 802.2 LLC error, discarding frame"
-        WRMSG( HHC00970, "D", pLCSPORT->bPort );
+        WRMSG( HHC00970, "W", pLCSPORT->bPort );
 
     return;
 }

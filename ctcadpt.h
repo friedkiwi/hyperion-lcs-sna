@@ -1161,9 +1161,9 @@ struct  _LLC
 #define SS_Reject                   2    // B'10'
 #define M_DM_Response               3    // B'00011' = DM Response (0x1F)
 #define M_DISC_Command              8    // B'01000' = DISC Command (0x53)
-#define M_UA_Response               12   // B'01100' = UA Response(0x73)
-#define M_SABME_Command             15   // B'01111' = SABME Command(0x7F)
-#define M_FRMR_Response             17   // B'10001' = FRMR Response(0x87)
+#define M_UA_Response               12   // B'01100' = UA Response (0x73)
+#define M_SABME_Command             15   // B'01111' = SABME Command (0x7F)
+#define M_FRMR_Response             17   // B'10001' = FRMR Response (0x87)
 #define M_XID_Command_or_Response   23   // B'10111'   XID Command or Response
 #define M_TEST_Command_or_Response  28   // B'11100'   TEST Command or Response
 
