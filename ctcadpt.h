@@ -647,24 +647,18 @@ struct _LCSCONN                        // LCS SNA Connection
                                        // it will use this token for outbound.
     MAC       bLocalMAC;               // Local MAC address
     MAC       bRemoteMAC;              // Remote MAC address
-    int       iCreated;                //
+    U16       hwCreated;               //
 #define LCSCONN_CREATED_INBOUND 1
 #define LCSCONN_CREATED_OUTBOUND 2
-    int       iNotUsed;                //
+    U16       hwNotUsed;               //
     U16       hwXIDSeqNum;             // XID Exchange Sequence number
     U16       hwDataSeqNum;            // Data Sequence number
-    BYTE*     pLocalCPNameCV;          // Local CP Name Control Vector
-    BYTE*     pLocalPUNameCV;          // Local PU Name Control Vector
-    BYTE*     pLocalLSNameCV;          // Local Link Station Name Control Vector
-    BYTE*     pLocalPSetIdCV;          // Local Product Set ID Control Vector
-    BYTE*     pLocalTGDescCV;          // Local TG Description Control Vector
-    BYTE*     pLocalHPRCapCV;          // Local HPR Capabilities Control Vector
-    BYTE*     pRemoteCPNameCV;         // Remote CP Name Control Vector
-    BYTE*     pRemotePUNameCV;         // Remote PU Name Control Vector
-    BYTE*     pRemoteLSNameCV;         // Remote Link Station Name Control Vector
-    BYTE*     pRemotePSetIdCV;         // Remote Product Set ID Control Vector
-    BYTE*     pRemoteTGDescCV;         // Remote TG Description Control Vector
-    BYTE*     pRemoteHPRCapCV;         // Remote HPR Capabilities Control Vector
+    U16       hwLocalNS;               // Local NS
+    U16       hwLocalNR;               // Local NR
+    U16       hwRemoteNS;              // Remote NS
+    U16       hwRemoteNR;              // Remote NR
+    u_int     fFirstRR:1;              //
+
 };
 
 
@@ -1143,18 +1137,18 @@ struct  _LLC
 {
     LPDU        bLpdu;                 // LLC PDU DSAP, SSAP & Control
     BYTE        bInfo[8];              // LLC PDU Information
-    U32         fwLpduSize;            // Size = 3 or 4
-    U32         fwInfoSize;            // Size = 0 or more, maximum 5.
-    U32         fwDSAP;                // DSAP (Destination Service Access Point)
-    U32         fwDSAP_IG;             // Individual or Group
-    U32         fwSSAP;                // SSAP (Source Service Access Point)
-    U32         fwSSAP_CR;             // Command or Response
-    U32         fwNS;                  // NS count
-    U32         fwNR;                  // NR count
-    U32         fwPF;                  // P or F bit
-    U32         fwSS;                  // S bits, i.e. type of Supervisory
-    U32         fwM;                   // M bits, i.e. type of Unnumbered
-    U32         fwType;
+    U16         hwLpduSize;            // Size = 3 or 4
+    U16         hwInfoSize;            // Size = 0 or more, maximum 5.
+    U16         hwDSAP;                // DSAP (Destination Service Access Point)
+    U16         hwDSAP_IG;             // Individual or Group
+    U16         hwSSAP;                // SSAP (Source Service Access Point)
+    U16         hwSSAP_CR;             // Command or Response
+    U16         hwNS;                  // NS count
+    U16         hwNR;                  // NR count
+    U16         hwPF;                  // P or F bit
+    U16         hwSS;                  // S bits, i.e. type of Supervisory
+    U16         hwM;                   // M bits, i.e. type of Unnumbered
+    U16         hwType;
 };
 #define SS_Receiver_Ready           0    // B'00'
 #define SS_Receiver_Not_Ready       1    // B'01'
