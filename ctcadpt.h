@@ -657,7 +657,7 @@ struct _LCSCONN                        // LCS SNA Connection
     U16       hwLocalNR;               // Local NR
     U16       hwRemoteNS;              // Remote NS
     U16       hwRemoteNR;              // Remote NR
-    u_int     fFirstRR:1;              //
+    u_int     fIframe:1;               // I-frame received
 
 };
 
@@ -1140,9 +1140,9 @@ struct  _LLC
     U16         hwLpduSize;            // Size = 3 or 4
     U16         hwInfoSize;            // Size = 0 or more, maximum 5.
     U16         hwDSAP;                // DSAP (Destination Service Access Point)
-    U16         hwDSAP_IG;             // Individual or Group
+    U16         hwIG;                  // Individual or Group bit
     U16         hwSSAP;                // SSAP (Source Service Access Point)
-    U16         hwSSAP_CR;             // Command or Response
+    U16         hwCR;                  // Command or Response bit
     U16         hwNS;                  // NS count
     U16         hwNR;                  // NR count
     U16         hwPF;                  // P or F bit
