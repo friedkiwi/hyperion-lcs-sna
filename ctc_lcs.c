@@ -6271,6 +6271,41 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
           WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
         }                                                                          /* FixMe! Remove! */
 
+            // Find the connection block.
+            pLCSCONN = find_connection_by_remote_mac( pLCSDEV, &pEthFrame->bSrcMAC );
+            if (!pLCSCONN)
+            {
+                WRMSG( HHC03984, "E", "No LCSCONN found");
+                /* FixMe! Need a proper error message here! */
+                break;
+            }
+
+            // Obtain a buffer in which to construct the data to be passed to VTAM.
+            pLCSIBH = alloc_lcs_buffer( pLCSDEV, ( INBOUND_4D00_SIZE * 2 ) );
+
+            memcpy( &pLCSIBH->bData, Inbound_4D00, INBOUND_4D00_SIZE );
+            pLCSIBH->iDataLen = INBOUND_4D00_SIZE;
+
+            pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
+            pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
+            FETCH_HW( hwLenBaf1, pLCSBAF1->hwLenBaf1 );
+            FETCH_HW( hwLenBaf2, pLCSBAF1->hwLenBaf2 );
+            pLCSBAF2 = (PLCSBAF2)( (BYTE*)pLCSBAF1 + hwLenBaf1 );
+
+            //
+            memcpy( pLCSBAF1->bTokenA, &pLCSCONN->bInToken, sizeof(pLCSCONN->bInToken) );  // Set Inbound token
+
+            //
+            STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
+//??        pLCSCONN->hwDataSeqNum++;
+
+            memcpy( &pLCSBAF2->bByte03, &pLCSCONN->bOutToken, sizeof(pLCSCONN->bOutToken) ); // Outbound token
+
+            // Add the buffer containing the XID response to the chain.
+            add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
+
+            fAttnRequired = TRUE;
+
             break;
 
 
