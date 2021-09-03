@@ -4086,31 +4086,36 @@ static void*  LCS_AttnThread( void* arg)
 //          if (pLCSBLK->fDebug)                                                                            /* FixMe! Remove! */
 //              net_data_trace( pDEVBLK, (BYTE*)pLCSATTN, sizeof( LCSATTN ), ' ', 'D', "LCSATTN out", 0 );  /* FixMe! Remove! */
 
-            PTT_DEBUG( "PRC  Attn", pLCSATTN, pDEVBLK->devnum, 000 );
-
-            /* --------------------------------------------------------------------- */
-//          interval = 25;
-            interval = 100;
-            dev_attn_rc = 0;       /* device_attention RC    */
-//          attn_can = 0;          /* = 1 : Atttention Cancelled */
-            busy_waits = 0;        /* Number of times waited for */
-                                   /* a Busy condition to end    */
-
-            for( ; ; )
+            /* Only raise an Attention if there is at least one buffer waiting to be read. */
+            if (pLCSDEV->pFirstLCSIBH)
             {
 
-                // Wait an (increasingly) small amount of time.
-                usleep(interval);
+                PTT_DEBUG( "PRC  Attn", pLCSATTN, pDEVBLK->devnum, 000 );
 
-//??            // is there still something in our frame buffer?
-//??            if (!pLCSDEV->fDataPending && !pLCSDEV->fReplyPending)
-//??            {
-//??                break;
-//??            }
+                /* --------------------------------------------------------------------- */
 
-                // Raise Attention
-                dev_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
-                PTT_DEBUG( "Raise Attn   ", 000, pDEVBLK->devnum, dev_attn_rc );
+//              interval = 25;
+                interval = 100;
+                dev_attn_rc = 0;       /* device_attention RC    */
+//              attn_can = 0;          /* = 1 : Atttention Cancelled */
+                busy_waits = 0;        /* Number of times waited for */
+                                       /* a Busy condition to end    */
+
+                for( ; ; )
+                {
+
+                    // Wait a small (but increasing) amount of time.
+                    usleep(interval);
+
+//??                // is there still something in our frame buffer?
+//??                if (!pLCSDEV->fDataPending && !pLCSDEV->fReplyPending)
+//??                {
+//??                    break;
+//??                }
+
+                    // Raise Attention
+                    dev_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
+                    PTT_DEBUG( "Raise Attn   ", 000, pDEVBLK->devnum, dev_attn_rc );
 
     {                                                                                                        /* FixMe! Remove? */
         char    tmp[256];                                                                                    /* FixMe! Remove? */
@@ -4118,28 +4123,30 @@ static void*  LCS_AttnThread( void* arg)
         WRMSG(HHC03991, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname, tmp );          /* FixMe! Remove? */
     }                                                                                                        /* FixMe! Remove? */
 
-                // ATTN RC=1 means a device busy status did
-                // appear so that the signal did not work.
-                // We will retry after some (increasingly)
-                // small amount of time.
-                if ( dev_attn_rc != 1 )
-                {
-                    break;
-                }
+                    // ATTN RC=1 means a device busy status did
+                    // appear so that the signal did not work.
+                    // We will retry after some (increasingly)
+                    // small amount of time.
+                    if ( dev_attn_rc != 1 )
+                    {
+                        break;
+                    }
 
-                busy_waits++;
+                    busy_waits++;
 
-                if ( busy_waits >= 20 )
-                {
-                    break;
-                }
+                    if ( busy_waits >= 20 )
+                    {
+                        break;
+                    }
 
-//              interval = interval * 2;
-                interval += 100;
+//                  interval = interval * 2;
+                    interval += 100;
 
-            }   // end for ( ; ; )
+                }   // end for ( ; ; )
 
-            /* --------------------------------------------------------------------- */
+                /* --------------------------------------------------------------------- */
+
+            }
 
             /* Free the LCSATTN block that has just been processed */
             free (pLCSATTN);
@@ -4708,7 +4715,7 @@ void Process_0D10 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
 // ====================================================================
 //
 // The outbound LCSBAF1 and LCSBAF2 arriving from VTAM are usually,
-// respectively, 15 (0x0F) and 5 (0x05) or more bytes in length.
+// respectively, 15 (0x0F) and 26 (0x1A) bytes in length.
 //
 void Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2 pLCSBAF2, U16 hwLenBaf1, U16 hwLenBaf2)
 {
@@ -4719,95 +4726,72 @@ void Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     UNREFERENCED( hwLenBaf1 );
     UNREFERENCED( hwLenBaf2 );
 //                   Token
-//  000F0D0000426002 40000240 00FF00
+//  000F0D00001A6002 40000240 000000
 //  0 1 2 3 4 5 6 7  8 9 A B  C D E
 //
-//             TH etc.
-//  0100000000 xxxxxxxx...........
-//  0 1 2 3 4  5 6 7 8 9 A B C ...
+//  01000300 00000000 00000000 00000000 00000000 00000000 0000
+//  0 1 2 3  4 5 6 7  8 9 A B  C ...
 
-//??    DEVBLK*   pDEVBLK;
-//??    PLCSPORT  pLCSPORT;
-//??    PLCSCONN  pLCSCONN;
-//??    PETHFRM   pEthFrame;
-//??    int       iEthLen;
-//??    int       iLPDULen;
-//??    LLC       llc;
-//??    int       iTHetcLen;
-//??    int       iTraceLen;
-//??    BYTE      frame[1600];
-//??      char    tmp[256];                                                        /* FixMe! Remove! */
-//??
-//??
-//??    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
-//??    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
-//??    memset( frame, 0, sizeof(frame) );                               // Clear area for ethernet fram
-//??    pEthFrame = (PETHFRM)&frame[0];
-//??    iEthLen = 60;                                                    // Minimum ethernet frame length
-//??
-//??    // Find the connection block.
-//??    pLCSCONN = find_connection_by_outbound_token( pLCSDEV, pLCSBAF1->bTokenA );
-//??    if (!pLCSCONN)
-//??    {
-//??        WRMSG( HHC03984, "E", "No LCSCONN found");
-//??        /* FixMe! Need a proper error message here! */
-//??        return;
-//??    }
-//??
-//??    //
-//??    memset( &llc, 0, sizeof(LLC) );
-//??    llc.hwDSAP    = LSAP_SNA_Path_Control;
-//??    llc.hwSSAP    = LSAP_SNA_Path_Control;
-//??    llc.hwNS      = 0;                           // FixMe! Need to understand
-//??    llc.hwNR      = 0;                           // ..and manage equence numbers!
-//??    llc.hwType    = Type_Information_Frame;
-//??
-//??    // Construct Ethernet frame
-//??    memcpy( &pEthFrame->bDestMAC, &pLCSCONN->bRemoteMAC, IFHWADDRLEN );   // Copy destination MAC address
-//??    memcpy( &pEthFrame->bSrcMAC, &pLCSCONN->bLocalMAC, IFHWADDRLEN );     // Copy source MAC address
-//??    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                         // Build LLC PDU
-//??    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );                 // Set data length
-//??
-//??    // Continue Ethernet frame construction if there is a TH etc.
-//??    iTHetcLen = ( hwLenBaf2 - 5 );                                        // Calculate length of TH etc
-//??    if ( iTHetcLen > 0 )                                                  // Any TH etc?
-//??    {
-//??        STORE_HW( pEthFrame->hwEthernetType, (U16)(iLPDULen + iTHetcLen) );     // Set LLC and TH etc length
-//??        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte05, iTHetcLen );   // Copy TH etc
-//??        if ( iEthLen < (iLPDULen + iTHetcLen) )
-//??        {
-//??            iEthLen = (iLPDULen + iTHetcLen);
-//??        }
-//??    }
-//??
-//??    // Trace Ethernet frame before sending to TAP device
-//??    if (pLCSPORT->pLCSBLK->fDebug)
-//??    {
-//??        // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
-//??        WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
-//??                             pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
-//??        iTraceLen = iEthLen;
-//??        if (iTraceLen > MAX_TRACE_LEN)
-//??        {
-//??            iTraceLen = MAX_TRACE_LEN;
-//??            // HHC00980 "%1d:%04X %s: Data of size %d bytes displayed, data of size %d bytes not displayed"
-//??            WRMSG(HHC00980, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
-//??                                 iTraceLen, (iEthLen - iTraceLen) );
-//??        }
-//??        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iTraceLen, '>', 'D', "eth frame", 0 );
-//??    {                                                                          /* FixMe! Remove! */
-//??      snprintf( (char*)tmp, 256, "LCS: LLC information frame sent: CR=%u, NS=%u, NR=%u", llc.hwCR, llc.hwNS, llc.hwNR );
-//??      WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
-//??    }                                                                          /* FixMe! Remove! */
-//??    }
-//??
-//??    // Write the Ethernet frame to the TAP device
-//??    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
-//??    {
-//??        pLCSDEV->iTuntapErrno = errno;
-//??        pLCSDEV->fTuntapError = TRUE;
-//??        PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
-//??    }
+    DEVBLK*     pDEVBLK;                                                                   /* FixMe! Remove! */
+    PLCSPORT    pLCSPORT;
+    PLCSCONN    pLCSCONN;
+    int         iLPDULen;
+    LLC         llc;
+    PETHFRM     pEthFrame;
+    int         iEthLen;
+    BYTE        frame[64];
+          char    tmp[256];                                                        /* FixMe! Remove! */
+
+
+    pDEVBLK = pLCSDEV->pDEVBLK[ LCSDEV_READ_SUBCHANN ];
+    pLCSPORT = &pLCSDEV->pLCSBLK->Port[pLCSDEV->bPort];
+    memset( frame, 0, sizeof(frame) );                               // Clear area for ethernet fram
+    pEthFrame = (PETHFRM)&frame[0];
+    iEthLen = 60;                                                    // Minimum ethernet frame length
+
+    // Find the connection block.
+    pLCSCONN = find_connection_by_outbound_token( pLCSDEV, pLCSBAF1->bTokenA );
+    if (!pLCSCONN)
+    {
+        WRMSG( HHC03984, "E", "No LCSCONN found");
+        /* FixMe! Need a proper error message here! */
+        return;
+    }
+
+    //
+    memset( &llc, 0, sizeof(LLC) );
+    llc.hwDSAP    = LSAP_SNA_Path_Control;
+    llc.hwSSAP    = LSAP_SNA_Path_Control;
+    llc.hwPF      = 1;
+    llc.hwM       = M_SABME_Command;
+    llc.hwType    = Type_Unnumbered_Frame;
+
+    // Construct Ethernet frame
+    memcpy( &pEthFrame->bDestMAC, &pLCSCONN->bRemoteMAC, IFHWADDRLEN );   // Copy destination MAC address
+    memcpy( &pEthFrame->bSrcMAC, &pLCSCONN->bLocalMAC, IFHWADDRLEN );     // Copy source MAC address
+    iLPDULen = BuildLLC( &llc, pEthFrame->bData);                         // Build LLC PDU
+    STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );                 // Set data length
+
+    // Trace Ethernet frame before sending to TAP device
+    if (pLCSPORT->pLCSBLK->fDebug)
+    {
+        // "%1d:%04X %s: port %2.2X: Send frame of size %d bytes (with %s packet) to device %s"
+        WRMSG(HHC00983, "D", SSID_TO_LCSS(pDEVBLK->ssid), pDEVBLK->devnum, pDEVBLK->typname,
+                             pLCSDEV->bPort, iEthLen, "802.3 SNA", pLCSPORT->szNetIfName );
+        net_data_trace( pDEVBLK, (BYTE*)pEthFrame, iEthLen, '>', 'D', "eth frame", 0 );
+        {                                                                          /* FixMe! Remove! */
+          snprintf( (char*)tmp, 256, "LCS: LLC unnumbered frame sent: CR=%u, M=%s", llc.hwCR, "SABME" );
+          WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
+        }                                                                          /* FixMe! Remove! */
+    }
+
+    // Write the Ethernet frame to the TAP device
+    if (TUNTAP_Write( pDEVBLK->fd, (BYTE*)pEthFrame, iEthLen ) != iEthLen)
+    {
+        pLCSDEV->iTuntapErrno = errno;
+        pLCSDEV->fTuntapError = TRUE;
+        PTT_TIMING( "*WRITE ERR", 0, iEthLen, 1 );
+    }
 
     return;
 }
