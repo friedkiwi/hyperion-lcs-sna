@@ -4759,6 +4759,9 @@ void Process_0D00 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     }
 
     //
+    FETCH_HW( pLCSCONN->hwDataSeqNum, pLCSBAF2->hwSeqNum );
+
+    //
     memset( &llc, 0, sizeof(LLC) );
     llc.hwDSAP    = LSAP_SNA_Path_Control;
     llc.hwSSAP    = LSAP_SNA_Path_Control;
@@ -5968,6 +5971,20 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 //  00200400  00184C0B 00036001 00000101 00000000 00007656 00000000  01 4000 00
 //            0 1 2 3  4 5 6 7  8 9 A B  C D E F  0 1 2 3  4 5 6 7   0  1 2  3
 
+#define INBOUND_CD00_SIZE  32
+static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
+                 {
+                    0x00, 0x20, 0x04, 0x00,                          /* LCSHDR  */
+                    0x00, 0x18, 0xCD, 0x00, 0x00, 0x03, 0x60, 0x01,  /* LCSBAF1 */
+                    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x01, 0xff, 0xff,                                /* LCSBAF2 */
+                    0x00                                             /* Filler  */
+                 };
+//  00200400  0018CD00 00036001 00000101  00000000 00007000 00000000  010037  00
+//            0 1 2 3  4 5 6 7  8 9 A B   C D E F  1 2 3 4  5 6 7 8   0 1 2
+
+
     LLC         llc;
     int         illcsize;
     DEVBLK*     pDEVBLK;
@@ -6281,10 +6298,10 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
             }
 
             // Obtain a buffer in which to construct the data to be passed to VTAM.
-            pLCSIBH = alloc_lcs_buffer( pLCSDEV, ( INBOUND_4D00_SIZE * 2 ) );
+            pLCSIBH = alloc_lcs_buffer( pLCSDEV, ( INBOUND_CD00_SIZE * 2 ) );
 
-            memcpy( &pLCSIBH->bData, Inbound_4D00, INBOUND_4D00_SIZE );
-            pLCSIBH->iDataLen = INBOUND_4D00_SIZE;
+            memcpy( &pLCSIBH->bData, Inbound_CD00, INBOUND_CD00_SIZE );
+            pLCSIBH->iDataLen = INBOUND_CD00_SIZE;
 
             pLCSHDR = (PLCSHDR)&pLCSIBH->bData;
             pLCSBAF1 = (PLCSBAF1)( (BYTE*)pLCSHDR + sizeof(LCSHDR) );
@@ -6297,9 +6314,7 @@ static const BYTE Inbound_4C0B[INBOUND_4C0B_SIZE] =
 
             //
             STORE_HW( pLCSBAF2->hwSeqNum, pLCSCONN->hwDataSeqNum );
-//??        pLCSCONN->hwDataSeqNum++;
-
-            memcpy( &pLCSBAF2->bByte03, &pLCSCONN->bOutToken, sizeof(pLCSCONN->bOutToken) ); // Outbound token
+            pLCSCONN->hwDataSeqNum++;
 
             // Add the buffer containing the XID response to the chain.
             add_lcs_buffer_to_chain( pLCSDEV, pLCSIBH );
