@@ -5154,7 +5154,7 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     LLC       llc;
     PETHFRM   pEthFrame;
     int       iEthLen;
-    int       iXID3andCVlen;
+    int       iXIDlen;
     int       iTraceLen;
     BYTE      frame[512];
           char    tmp[256];                                                        /* FixMe! Remove! */
@@ -5193,22 +5193,16 @@ void Process_0C22 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     iLPDULen = BuildLLC( &llc, pEthFrame->bData);                    // Build LLC PDU
     STORE_HW( pEthFrame->hwEthernetType, (U16)iLPDULen );            // Set data length
 
-    // Continue Ethernet frame construction if there is an XID3 and CV's.
-    iXID3andCVlen = ( hwLenBaf2 - 26 );                              // Calculate length of XID3 and CV's
-    if ( iXID3andCVlen > 0 )                                         // Any XID3 an CV's?
+    // Continue Ethernet frame construction if there is an XID0 or an XID3 and CV's.
+    iXIDlen = ( hwLenBaf2 - 26 );                                    // Calculate length of XID0 or XID3 and CV's
+    if ( iXIDlen > 0 )                                               // Any XID0 or XID3 an CV's?
     {
-        STORE_HW( pEthFrame->hwEthernetType, (U16)( iLPDULen + iXID3andCVlen ) );   // Set LLC and XID3 and CV's length
-        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte26, iXID3andCVlen );   // Copy XID3 and CV's.
-        if ( iEthLen < ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXID3andCVlen) )
+        STORE_HW( pEthFrame->hwEthernetType, (U16)( iLPDULen + iXIDlen ) );    // Set LLC and XID0 or XID3 and CV's length
+        memcpy( &pEthFrame->bData[iLPDULen], &pLCSBAF2->bByte26, iXIDlen );    // Copy XID0 or XID3 and CV's.
+        if ( iEthLen < ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXIDlen) )
         {
-            iEthLen = ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXID3andCVlen);
+            iEthLen = ((IFHWADDRLEN * 2) + 2 + iLPDULen + iXIDlen);
         }
-    }
-
-    //
-    if ( iXID3andCVlen > 0 )                                         // Any XID3 an CV's?
-    {
-        /* FixMe!  Extract vectors */
     }
 
     // Trace Ethernet frame before sending to TAP device
@@ -6422,7 +6416,7 @@ static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
           WRMSG(HHC03984, "D", tmp );                                              /* FixMe! Remove! */
         }                                                                          /* FixMe! Remove! */
 
-            // Calculate the size of the XID3 and CV's.
+            // Calculate the size of the XID0 or the XID3 and CV's.
             iDatasize = (iLLCandDatasize - illcsize);
 
             // Find the connection block.
@@ -6440,7 +6434,7 @@ static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
             {
                 if (!pLCSCONN)  // There isn't an existing LCSCONN.
                 {
-                    if ( iDatasize > 0 )  // Is there an XID3 and CV's?
+                    if ( iDatasize > 0 )  // Is there an XID0 or an XID3 and CV's?
                     {
                         WRMSG( HHC03984, "E", "No LCSCONN found");
                         /* FixMe! Need a proper error message here! */
@@ -6465,72 +6459,19 @@ static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
                 }
                 else  // There is an existing LCSCONN.
                 {
-                    if ( iDatasize > 0 )  // Is there an XID3 and CV's?
+                    if ( pLCSCONN->hwCreated == LCSCONN_CREATED_INBOUND )  // The existing LSCCONN is for an inbound connection.
                     {
-                        if ( pLCSCONN->hwCreated == LCSCONN_CREATED_INBOUND )  // The existing LSCCONN is for an inbound connection.
-                        {
-                            WRMSG( HHC03984, "I", "Found LCSCONN Inbound");
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-                        }
-                        else  // The existing LCSCONN is for an outbound connection.
-                        {
-                            WRMSG( HHC03984, "E", "Found and released existing LCSCONN Outbound");
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-                            remove_connection_from_chain( pLCSDEV, pLCSCONN );
-                            free_connection( pLCSDEV, pLCSCONN );
-
-                            // Create the LCSCONN for the new inbound connection.
-                            pLCSCONN = alloc_connection( pLCSDEV );
-                            pLCSCONN->hwCreated = LCSCONN_CREATED_INBOUND;
-
-                            memcpy( &pLCSCONN->bLocalMAC, &pLCSPORT->MAC_Address, IFHWADDRLEN );
-#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
-                            pLCSCONN->bLocalMAC[5]++;
-#endif
-                            memcpy( &pLCSCONN->bRemoteMAC, &pEthFrame->bSrcMAC, IFHWADDRLEN );
-
-                            WRMSG( HHC03984, "I", "Created LCSCONN Inbound");
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-
-                            add_connection_to_chain( pLCSDEV, pLCSCONN );
-                        }
+                        WRMSG( HHC03984, "I", "Found LCSCONN Inbound");
+                        if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
+                            net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
                     }
-                    else  // There isn't an XID3 and CV's, i.e. it's the first XID
+                    else  // The existing LCSCONN is for an outbound connection.
                     {
-                        if ( pLCSCONN->hwCreated == LCSCONN_CREATED_INBOUND )  // The existing LSCCONN is for an inbound connection.
-                        {
-                            WRMSG( HHC03984, "I", "Found LCSCONN Inbound");
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-                        }
-                        else  // The existing LCSCONN is for an outbound connection.
-                        {
-                            WRMSG( HHC03984, "E", "Found and released existing LCSCONN Outbound");
-                            /* FixMe! Need a proper error message here! */
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-                            remove_connection_from_chain( pLCSDEV, pLCSCONN );
-                            free_connection( pLCSDEV, pLCSCONN );
+                        WRMSG( HHC03984, "W", "Found existing LCSCONN Outbound, changed to LCSCONN Inbound");
+                        if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
+                            net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
 
-                            // Create the LCSCONN for the new inbound connection.
-                            pLCSCONN = alloc_connection( pLCSDEV );
-                            pLCSCONN->hwCreated = LCSCONN_CREATED_INBOUND;
-
-                            memcpy( &pLCSCONN->bLocalMAC, &pLCSPORT->MAC_Address, IFHWADDRLEN );
-#if !defined( OPTION_TUNTAP_LCS_SAME_ADDR )
-                            pLCSCONN->bLocalMAC[5]++;
-#endif
-                            memcpy( &pLCSCONN->bRemoteMAC, &pEthFrame->bSrcMAC, IFHWADDRLEN );
-
-                            WRMSG( HHC03984, "I", "Created LCSCONN Inbound");
-                            if (pLCSDEV->pLCSBLK->fDebug)                                                             /* FixMe! Remove! */
-                                net_data_trace( pDEVBLK, (BYTE*)pLCSCONN, sizeof(LCSCONN), ' ', 'D', "LCSCONN", 0 );  /* FixMe! Remove! */
-
-                            add_connection_to_chain( pLCSDEV, pLCSCONN );
-                        }
+                        pLCSCONN->hwCreated = LCSCONN_CREATED_INBOUND;
                     }
                 }
             }
@@ -6577,7 +6518,7 @@ static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
             hwOffset += (6 + 6 + 3);
             STORE_HW( pLCSHDR->hwOffset, hwOffset );
 
-            // Copy the XID3 and CV's to the buffer.
+            // Copy the XID0 or the XID3 and CV's to the buffer.
             if ( iDatasize > 0 )
             {
                 memcpy( &pLCSBAF2->bByte27, &pEthFrame->bData[3], iDatasize );
