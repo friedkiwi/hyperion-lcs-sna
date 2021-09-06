@@ -4656,7 +4656,10 @@ void Process_0D10 (PLCSDEV pLCSDEV, PLCSHDR pLCSHDR, PLCSBAF1 pLCSBAF1, PLCSBAF2
     llc.hwSSAP    = LSAP_SNA_Path_Control;
     llc.hwNS      = pLCSCONN->hwLocalNS;
     pLCSCONN->hwLocalNS = ((pLCSCONN->hwLocalNS + 1) & 0x7F);
-    llc.hwNR      = ((pLCSCONN->hwRemoteNS + 1) & 0x7F);
+    if (pLCSCONN->fIframe)
+    {
+         llc.hwNR  = ((pLCSCONN->hwRemoteNS + 1) & 0x7F);
+    }
     llc.hwType    = Type_Information_Frame;
 
     // Construct Ethernet frame
@@ -6371,6 +6374,27 @@ static const BYTE Inbound_CD00[INBOUND_CD00_SIZE] =
             break;
 
         // Unnumbered Frame: FRMR Response (B'10001', 0x11, 0x87 or 0x97).
+        //
+        // A link station sends a Frame Reject response to report an error in an
+        // incoming LPDU from the other link station. When you see a FRMR, the
+        // station that sends the FRMR has detected an unrecoverable error. It
+        // is not the cause of the error. Any frames that arrive after the FRMR
+        // error has occurred are ignored until a DISC or SABME is received.
+        // A FRMR response contains information about the cause of the FRMR
+        // condition.
+        // Bytes 0 and 1 contain the contents of the control field of the LPDU
+        // which caused the frame reject. Bytes 2 and 3 contain the NS an NR
+        // counts, respectively. Byte 4 contains several bits that identify the
+        // type of error as shown here:
+        //   0-0-0-V-Z-Y-W-X
+        // The V bit indicates that the NS number carried by the control field
+        // in bytes 0 and 1 is invalid. An NS is invalid if greater than or
+        // equal to the last NS plus the maximum receive window size. When this
+        // condition occurs, the link station sends a REJ LPDU, not a FRMR
+        // response.
+        // The Z bit indicates that the NR that the control field carries
+        // indicated in bytes 0 and 1 does not refer to either the next I frame
+        // or an I frame that has already been transmitted but not acknowledged.
         case M_FRMR_Response:
 
         if (pLCSBLK->fDebug)
